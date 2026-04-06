@@ -183,7 +183,7 @@ class ChallengeSwarm:
             self._submitted_flags.add(normalized)
 
             from backend.tools.core import do_submit_flag
-            display, is_confirmed = await do_submit_flag(self.ctfd, self.meta.name, flag)
+            display, is_confirmed = await do_submit_flag(self.ctfd, self.meta, flag)
             if is_confirmed:
                 self.confirmed_flag = normalized
             else:

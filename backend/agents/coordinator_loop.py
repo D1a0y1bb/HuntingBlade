@@ -11,10 +11,11 @@ from typing import Any
 
 from backend.config import Settings
 from backend.cost_tracker import CostTracker
-from backend.ctfd import CTFdClient
 from backend.deps import CoordinatorDeps
 from backend.models import DEFAULT_MODELS
-from backend.poller import CTFdPoller
+from backend.poller import CompetitionPoller
+from backend.platforms.base import CompetitionPlatformClient
+from backend.platforms.factory import create_platform_client
 from backend.prompts import ChallengeMeta
 
 logger = logging.getLogger(__name__)
@@ -30,14 +31,10 @@ def build_deps(
     no_submit: bool = False,
     challenge_dirs: dict[str, str] | None = None,
     challenge_metas: dict[str, ChallengeMeta] | None = None,
-) -> tuple[CTFdClient, CostTracker, CoordinatorDeps]:
-    """Create CTFd client, cost tracker, and coordinator deps."""
-    ctfd = CTFdClient(
-        base_url=settings.ctfd_url,
-        token=settings.ctfd_token,
-        username=settings.ctfd_user,
-        password=settings.ctfd_pass,
-    )
+    platform: CompetitionPlatformClient | None = None,
+) -> tuple[CompetitionPlatformClient, CostTracker, CoordinatorDeps]:
+    """Create platform client, cost tracker, and coordinator deps."""
+    ctfd = platform or create_platform_client(settings)
     cost_tracker = CostTracker()
     specs = model_specs or list(DEFAULT_MODELS)
     Path(challenges_root).mkdir(parents=True, exist_ok=True)
@@ -68,7 +65,7 @@ def build_deps(
 
 async def run_event_loop(
     deps: CoordinatorDeps,
-    ctfd: CTFdClient,
+    ctfd: CompetitionPlatformClient,
     cost_tracker: CostTracker,
     turn_fn: TurnFn,
     status_interval: int = 60,
@@ -77,12 +74,14 @@ async def run_event_loop(
 
     Args:
         deps: Coordinator dependencies (shared state).
-        ctfd: CTFd client (for poller).
+        ctfd: Competition platform client (for poller).
         cost_tracker: Cost tracker.
         turn_fn: Async function that sends a message to the coordinator LLM.
         status_interval: Seconds between status updates.
     """
-    poller = CTFdPoller(ctfd=ctfd, interval_s=5.0)
+    await ctfd.validate_access()
+
+    poller = CompetitionPoller(ctfd=ctfd, interval_s=5.0)
     await poller.start()
 
     # Start operator message HTTP endpoint
@@ -211,6 +210,8 @@ async def run_event_loop(
 async def _auto_spawn_one(deps: CoordinatorDeps, challenge_name: str) -> None:
     """Auto-spawn a swarm for a single challenge if not already running."""
     if challenge_name in deps.swarms:
+        return
+    if not getattr(deps.ctfd, "supports_challenge_materialization", True):
         return
     active = sum(1 for t in deps.swarm_tasks.values() if not t.done())
     if active >= deps.max_concurrent_challenges:

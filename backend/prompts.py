@@ -22,20 +22,36 @@ class ChallengeMeta:
     connection_info: str = ""
     hints: list[dict[str, Any]] = field(default_factory=list)
     solves: int = 0
+    platform: str = ""
+    platform_url: str = ""
+    event_id: int | None = None
+    platform_challenge_id: int | None = None
+    test_type: int | None = None
+    answer_mode: int | None = None
+    requires_env_start: bool = False
+    unsupported_reason: str = ""
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> ChallengeMeta:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         return cls(
             name=data.get("name", "Unknown"),
             category=data.get("category", ""),
             value=data.get("value", 0),
             description=data.get("description", ""),
-            tags=data.get("tags", []),
+            tags=data.get("tags") or [],
             connection_info=data.get("connection_info", ""),
-            hints=data.get("hints", []),
+            hints=data.get("hints") or [],
             solves=data.get("solves", 0),
+            platform=data.get("platform", ""),
+            platform_url=data.get("platform_url", ""),
+            event_id=data.get("event_id"),
+            platform_challenge_id=data.get("platform_challenge_id"),
+            test_type=data.get("test_type"),
+            answer_mode=data.get("answer_mode"),
+            requires_env_start=bool(data.get("requires_env_start", False)),
+            unsupported_reason=data.get("unsupported_reason", ""),
         )
 
 

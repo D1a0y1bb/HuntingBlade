@@ -139,6 +139,7 @@ class Solver:
             ctfd=ctfd,
             challenge_dir=challenge_dir,
             challenge_name=meta.name,
+            challenge_ref=meta,
             workspace_dir="",
             use_vision=self.use_vision,
             cost_tracker=cost_tracker,

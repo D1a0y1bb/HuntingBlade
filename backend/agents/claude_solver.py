@@ -155,7 +155,7 @@ class ClaudeSolver:
                             display, confirmed = await self.submit_fn(flag_val)
                         else:
                             from backend.tools.core import do_submit_flag
-                            display, confirmed = await do_submit_flag(self.ctfd, self.meta.name, flag_val)
+                            display, confirmed = await do_submit_flag(self.ctfd, self.meta, flag_val)
                         result_msg = display
                         if confirmed:
                             self._confirmed = True

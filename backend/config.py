@@ -6,6 +6,13 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
+    # Competition platform
+    platform: str = "ctfd"
+    platform_url: str = ""
+    lingxu_event_id: int = 0
+    lingxu_cookie: str = ""
+    lingxu_cookie_file: str = ""
+
     # CTFd
     ctfd_url: str = "http://localhost:8000"
     ctfd_user: str = "admin"

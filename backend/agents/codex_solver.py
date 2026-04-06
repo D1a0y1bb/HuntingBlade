@@ -436,7 +436,7 @@ class CodexSolver:
                 display, is_confirmed = await self.submit_fn(flag)
             else:
                 from backend.tools.core import do_submit_flag
-                display, is_confirmed = await do_submit_flag(self.ctfd, self.meta.name, flag)
+                display, is_confirmed = await do_submit_flag(self.ctfd, self.meta, flag)
             if is_confirmed:
                 self._confirmed = True
                 self._flag = flag

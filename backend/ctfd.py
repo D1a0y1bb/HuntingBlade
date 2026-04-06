@@ -127,6 +127,9 @@ class CTFdClient:
         data = await self._get("/challenges?per_page=500")
         return [ch for ch in data.get("data", []) if ch.get("type") != "hidden"]
 
+    async def validate_access(self) -> None:
+        await self.fetch_challenge_stubs()
+
     async def get_challenge_id(self, name: str) -> int:
         if name in self._challenge_ids:
             return self._challenge_ids[name]
@@ -139,7 +142,15 @@ class CTFdClient:
             raise RuntimeError(f'Challenge "{name}" not found in CTFd')
         return self._challenge_ids[name]
 
-    async def submit_flag(self, challenge_name: str, flag: str) -> SubmitResult:
+    async def submit_flag(self, challenge_ref: Any, flag: str) -> SubmitResult:
+        if isinstance(challenge_ref, str):
+            challenge_name = challenge_ref
+        elif isinstance(challenge_ref, dict):
+            challenge_name = str(challenge_ref.get("name") or "").strip()
+        else:
+            challenge_name = str(getattr(challenge_ref, "name", "") or "").strip()
+        if not challenge_name:
+            raise RuntimeError("CTFd submit requires challenge name")
         challenge_id = await self.get_challenge_id(challenge_name)
         resp = await self._post(
             "/challenges/attempt",
@@ -269,6 +280,9 @@ class CTFdClient:
         )
 
         return str(ch_dir)
+
+    async def prepare_challenge(self, challenge_dir: str) -> None:
+        return None
 
     async def close(self) -> None:
         if self._client:

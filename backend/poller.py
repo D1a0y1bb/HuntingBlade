@@ -1,10 +1,10 @@
-"""Background CTFd poller — detects new and solved challenges every 5 seconds."""
+"""Background competition poller — detects new and solved challenges every 5 seconds."""
 
 import asyncio
 import logging
 from dataclasses import dataclass, field
 
-from backend.ctfd import CTFdClient
+from backend.platforms.base import CompetitionPlatformClient
 
 logger = logging.getLogger(__name__)
 
@@ -17,10 +17,10 @@ class PollEvent:
 
 
 @dataclass
-class CTFdPoller:
-    """Polls CTFd every interval_s seconds, emits events for new/solved challenges."""
+class CompetitionPoller:
+    """Polls a competition platform every interval_s seconds, emits events for new/solved challenges."""
 
-    ctfd: CTFdClient
+    ctfd: CompetitionPlatformClient
     interval_s: float = 5.0
 
     _known_challenges: set[str] = field(default_factory=set)
@@ -37,7 +37,7 @@ class CTFdPoller:
             len(self._known_challenges),
             len(self._known_solved),
         )
-        self._task = asyncio.create_task(self._loop(), name="ctfd-poller")
+        self._task = asyncio.create_task(self._loop(), name="competition-poller")
 
     async def _seed(self) -> None:
         """Initial fetch — just populate known state, no events."""
@@ -123,3 +123,6 @@ class CTFdPoller:
         while not self._stop.is_set():
             await asyncio.sleep(self.interval_s)
             await self._poll_once()
+
+
+CTFdPoller = CompetitionPoller

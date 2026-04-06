@@ -60,17 +60,38 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
         challenges = await deps.ctfd.fetch_all_challenges()
         ch_data = next((c for c in challenges if c.get("name") == challenge_name), None)
         if not ch_data:
-            return f"Challenge '{challenge_name}' not found on CTFd"
+            return f"Challenge '{challenge_name}' not found on platform"
         output_dir = str(Path(deps.challenges_root))
-        ch_dir = await deps.ctfd.pull_challenge(ch_data, output_dir)
+        try:
+            ch_dir = await deps.ctfd.pull_challenge(ch_data, output_dir)
+        except NotImplementedError:
+            return f"Challenge '{challenge_name}' materialization is not available for this platform yet"
         deps.challenge_dirs[challenge_name] = ch_dir
         deps.challenge_metas[challenge_name] = ChallengeMeta.from_yaml(Path(ch_dir) / "metadata.yml")
+
+    meta = deps.challenge_metas.get(challenge_name)
+    if meta is None:
+        meta = ChallengeMeta.from_yaml(Path(deps.challenge_dirs[challenge_name]) / "metadata.yml")
+        deps.challenge_metas[challenge_name] = meta
+    if meta.unsupported_reason:
+        logger.info("challenge_skipped_unsupported name=%s reason=%s", challenge_name, meta.unsupported_reason)
+        return f"Challenge '{challenge_name}' skipped: {meta.unsupported_reason}"
+    if meta.requires_env_start and not meta.connection_info:
+        try:
+            await deps.ctfd.prepare_challenge(deps.challenge_dirs[challenge_name])
+        except Exception as e:
+            return f"Challenge '{challenge_name}' preflight_failed: {e}"
+        meta = ChallengeMeta.from_yaml(Path(deps.challenge_dirs[challenge_name]) / "metadata.yml")
+        deps.challenge_metas[challenge_name] = meta
+        if meta.unsupported_reason:
+            logger.info("challenge_skipped_unsupported name=%s reason=%s", challenge_name, meta.unsupported_reason)
+            return f"Challenge '{challenge_name}' skipped: {meta.unsupported_reason}"
 
     from backend.agents.swarm import ChallengeSwarm
 
     swarm = ChallengeSwarm(
         challenge_dir=deps.challenge_dirs[challenge_name],
-        meta=deps.challenge_metas[challenge_name],
+        meta=meta,
         ctfd=deps.ctfd,
         cost_tracker=deps.cost_tracker,
         settings=deps.settings,
@@ -105,7 +126,8 @@ async def do_submit_flag(deps: CoordinatorDeps, challenge_name: str, flag: str) 
     if deps.no_submit:
         return f'DRY RUN — would submit "{flag.strip()}" for {challenge_name}'
     try:
-        result = await deps.ctfd.submit_flag(challenge_name, flag)
+        challenge_ref = deps.challenge_metas.get(challenge_name) or challenge_name
+        result = await deps.ctfd.submit_flag(challenge_ref, flag)
         return result.display
     except Exception as e:
         return f"submit_flag error: {e}"
