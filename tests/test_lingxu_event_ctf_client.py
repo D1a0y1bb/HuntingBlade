@@ -69,18 +69,35 @@ async def test_validate_access_fails_without_event_permission() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "cookie",
-    [
-        "csrftoken=csrf456",
-        "sessionid=sid123",
-    ],
-)
-async def test_validate_access_normalizes_missing_cookie_fields(cookie: str) -> None:
+async def test_validate_access_accepts_session_cookie_without_csrf() -> None:
+    seen_headers: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_headers.append(dict(request.headers))
+        assert request.url.path == "/event/42/ctf/"
+        return httpx.Response(200, json={"results": []})
+
     client = LingxuEventCTFClient(
         base_url="https://lx.example.com",
         event_id=42,
-        cookie=cookie,
+        cookie="sessionid=sid123",
+        transport=httpx.MockTransport(handler),
+    )
+
+    try:
+        await client.validate_access()
+    finally:
+        await client.close()
+
+    assert [headers["cookie"] for headers in seen_headers] == ["sessionid=sid123"]
+
+
+@pytest.mark.asyncio
+async def test_validate_access_fails_without_session_cookie() -> None:
+    client = LingxuEventCTFClient(
+        base_url="https://lx.example.com",
+        event_id=42,
+        cookie="csrftoken=csrf456",
     )
 
     try:
@@ -261,6 +278,60 @@ async def test_prepare_challenge_starts_env_and_updates_connection_info_with_csr
 
 
 @pytest.mark.asyncio
+async def test_prepare_challenge_omits_csrf_header_when_cookie_has_no_token(tmp_path) -> None:
+    challenge_dir = tmp_path / "warmup-task-137"
+    challenge_dir.mkdir()
+    metadata_path = challenge_dir / "metadata.yml"
+    metadata_path.write_text(
+        yaml.dump(
+            {
+                "name": "Warmup Task",
+                "platform": "lingxu-event-ctf",
+                "event_id": 42,
+                "platform_challenge_id": 137,
+                "requires_env_start": True,
+                "connection_info": "",
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    seen_requests: list[tuple[str, str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_requests.append((request.method, request.url.path, request.headers.get("x-csrftoken")))
+        if request.url.path == "/event/42/ctf/137/begin/":
+            return httpx.Response(200, json={"status": 2, "msg": "您已经开启该题目"})
+        if request.url.path == "/event/42/ctf/137/run/":
+            return httpx.Response(200, json={"status": 2, "msg": "启动成功"})
+        if request.url.path == "/event/42/ctf/137/addr/":
+            return httpx.Response(200, json={"ext_id": "10.10.10.10:31337"})
+        raise AssertionError(f"unexpected path: {request.url.path}")
+
+    client = LingxuEventCTFClient(
+        base_url="https://lx.example.com",
+        event_id=42,
+        cookie="sessionid=sid123",
+        transport=httpx.MockTransport(handler),
+    )
+
+    try:
+        await client.prepare_challenge(str(challenge_dir))
+    finally:
+        await client.close()
+
+    metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["connection_info"] == "nc 10.10.10.10 31337"
+    assert seen_requests == [
+        ("POST", "/event/42/ctf/137/begin/", None),
+        ("POST", "/event/42/ctf/137/run/", None),
+        ("GET", "/event/42/ctf/137/addr/", None),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_submit_flag_accepts_challenge_meta_and_normalizes_correct() -> None:
     seen_paths: list[str] = []
 
@@ -292,6 +363,38 @@ async def test_submit_flag_accepts_challenge_meta_and_normalizes_correct() -> No
         await client.close()
 
     assert seen_paths == ["/event/42/ctf/137/flag/"]
+    assert result == SubmitResult(
+        status="correct",
+        message="",
+        display='CORRECT — "FLAG{real}" accepted.',
+    )
+
+
+@pytest.mark.asyncio
+async def test_submit_flag_omits_csrf_header_when_cookie_has_no_token() -> None:
+    seen_headers: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_headers.append(dict(request.headers))
+        assert request.url.path == "/event/42/ctf/137/flag/"
+        assert request.method == "POST"
+        assert request.headers["content-type"] == "application/x-www-form-urlencoded"
+        assert request.content == b"flag=FLAG%7Breal%7D"
+        return httpx.Response(200, json={"status": 1})
+
+    client = LingxuEventCTFClient(
+        base_url="https://lx.example.com",
+        event_id=42,
+        cookie="sessionid=sid123",
+        transport=httpx.MockTransport(handler),
+    )
+
+    try:
+        result = await client.submit_flag({"platform_challenge_id": 137}, "FLAG{real}")
+    finally:
+        await client.close()
+
+    assert "x-csrftoken" not in seen_headers[0]
     assert result == SubmitResult(
         status="correct",
         message="",

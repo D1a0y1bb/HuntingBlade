@@ -39,11 +39,9 @@ class LingxuEventCTFClient:
             cookie_map[key.strip()] = value.strip()
         return cookie_map
 
-    def _csrf_token(self) -> str:
-        token = self._cookie_map().get("csrftoken", "")
-        if not token:
-            raise RuntimeError("Lingxu cookie missing csrftoken")
-        return token
+    def _csrf_token(self) -> str | None:
+        token = self._cookie_map().get("csrftoken", "").strip()
+        return token or None
 
     async def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -77,11 +75,14 @@ class LingxuEventCTFClient:
         return response, payload
 
     def _write_json_headers(self) -> dict[str, str]:
-        return {
+        headers = {
             "Accept": "application/json, text/plain, */*",
-            "X-CSRFToken": self._csrf_token(),
             "X-Requested-With": "XMLHttpRequest",
         }
+        csrf_token = self._csrf_token()
+        if csrf_token:
+            headers["X-CSRFToken"] = csrf_token
+        return headers
 
     def _extract_message(self, payload: Any) -> str:
         if isinstance(payload, dict):
@@ -196,7 +197,6 @@ class LingxuEventCTFClient:
             cookie_map = self._cookie_map()
             if "sessionid" not in cookie_map:
                 raise RuntimeError("Lingxu cookie missing sessionid")
-            self._csrf_token()
             await self._get(f"/event/{self.event_id}/ctf/")
         except Exception as exc:
             raise RuntimeError("无法访问凌虚赛事 CTF 接口，请检查 Cookie、赛事 ID 和报名状态") from exc
