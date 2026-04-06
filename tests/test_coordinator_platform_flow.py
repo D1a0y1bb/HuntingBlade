@@ -235,6 +235,66 @@ async def test_run_event_loop_validates_platform_before_starting_poller(
 
 
 @pytest.mark.asyncio
+async def test_run_headless_coordinator_uses_shared_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.agents.headless_coordinator import run_headless_coordinator
+
+    platform = FakePlatform()
+    captured: dict[str, Any] = {}
+
+    def fake_build_deps(
+        settings: Settings,
+        model_specs: list[str] | None = None,
+        challenges_root: str = "challenges",
+        no_submit: bool = False,
+        challenge_dirs: dict[str, str] | None = None,
+        challenge_metas: dict[str, ChallengeMeta] | None = None,
+        platform: Any = None,
+    ) -> tuple[Any, CostTracker, CoordinatorDeps]:
+        deps = CoordinatorDeps(
+            ctfd=platform or FakePlatform(),
+            cost_tracker=CostTracker(),
+            settings=settings,
+            model_specs=model_specs or [],
+            challenges_root=challenges_root,
+            no_submit=no_submit,
+        )
+        return deps.ctfd, deps.cost_tracker, deps
+
+    async def fake_run_event_loop(
+        deps: CoordinatorDeps,
+        ctfd: Any,
+        cost_tracker: CostTracker,
+        turn_fn,
+        status_interval: int = 60,
+    ) -> dict[str, Any]:
+        captured["deps"] = deps
+        captured["ctfd"] = ctfd
+        captured["cost_tracker"] = cost_tracker
+        captured["status_interval"] = status_interval
+        captured["turn_result"] = await turn_fn("STATUS: 0 solved")
+        return {"results": {}, "total_cost_usd": 0.0, "total_tokens": 0}
+
+    monkeypatch.setattr("backend.agents.headless_coordinator.build_deps", fake_build_deps)
+    monkeypatch.setattr("backend.agents.headless_coordinator.run_event_loop", fake_run_event_loop)
+
+    result = await run_headless_coordinator(
+        settings=make_settings(platform="lingxu-event-ctf"),
+        model_specs=["azure/gpt-5.4-mini"],
+        challenges_root="challenges",
+        no_submit=True,
+        msg_port=9700,
+        platform=platform,
+    )
+
+    assert result["results"] == {}
+    assert captured["deps"].msg_port == 9700
+    assert captured["ctfd"] is platform
+    assert captured["turn_result"] is None
+
+
+@pytest.mark.asyncio
 async def test_auto_spawn_one_skips_platforms_without_materialization_support(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

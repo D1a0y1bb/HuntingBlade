@@ -78,8 +78,8 @@ def _setup_logging(verbose: bool = False) -> None:
 @click.option(
     "--coordinator",
     default="claude",
-    type=click.Choice(["claude", "codex"]),
-    help="协调器后端",
+    type=click.Choice(["claude", "codex", "none"]),
+    help="协调器后端；none 表示无总控整场模式",
 )
 @click.option("--max-challenges", default=10, type=int, help="最大并发题目数")
 @click.option("--msg-port", default=0, type=int, help="操作员消息端口，0 表示自动选择")
@@ -234,7 +234,8 @@ async def _run_coordinator(
     max_containers = max_challenges * len(model_specs)
     configure_semaphore(max_containers)
     await cleanup_orphan_containers()
-    console.print(f"[bold]Starting coordinator ({coordinator_backend}, Ctrl+C to stop)...[/bold]\n")
+    label = "none/headless" if coordinator_backend == "none" else coordinator_backend
+    console.print(f"[bold]Starting coordinator ({label}, Ctrl+C to stop)...[/bold]\n")
 
     if coordinator_backend == "codex":
         from backend.agents.codex_coordinator import run_codex_coordinator
@@ -245,6 +246,16 @@ async def _run_coordinator(
             challenges_root=challenges_dir,
             no_submit=no_submit,
             coordinator_model=coordinator_model,
+            msg_port=msg_port,
+        )
+    elif coordinator_backend == "none":
+        from backend.agents.headless_coordinator import run_headless_coordinator
+
+        results = await run_headless_coordinator(
+            settings=settings,
+            model_specs=model_specs,
+            challenges_root=challenges_dir,
+            no_submit=no_submit,
             msg_port=msg_port,
         )
     else:

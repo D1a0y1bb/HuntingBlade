@@ -32,6 +32,9 @@ def test_main_help_uses_english_options_with_chinese_help() -> None:
     assert "不传 `--challenge` 时启动完整协调器" in result.output
     assert "--challenge" in result.output
     assert "--platform" in result.output
+    assert "claude" in result.output
+    assert "codex" in result.output
+    assert "none" in result.output
     assert "--lingxu-cookie-file" in result.output
     assert "--题目目录" not in result.output
 
@@ -134,7 +137,54 @@ def test_main_accepts_lingxu_cookie_file_and_runs_coordinator(monkeypatch, tmp_p
     assert captured["msg_port"] == 9500
 
 
-def test_main_rejects_lingxu_without_cookie() -> None:
+def test_main_accepts_headless_coordinator(monkeypatch, tmp_path: Path) -> None:
+    cookie_file = tmp_path / "lingxu.cookie"
+    cookie_file.write_text("sessionid=sid123", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    async def fake_run_coordinator(
+        settings,
+        model_specs,
+        challenges_dir,
+        no_submit,
+        coordinator_model,
+        coordinator_backend,
+        max_challenges,
+        msg_port=0,
+    ) -> None:
+        captured["settings"] = settings
+        captured["coordinator_backend"] = coordinator_backend
+        captured["msg_port"] = msg_port
+
+    monkeypatch.setattr(cli, "_run_coordinator", fake_run_coordinator)
+
+    result = CliRunner().invoke(
+        cli.main,
+        [
+            "--platform",
+            "lingxu-event-ctf",
+            "--platform-url",
+            "https://lx.example.com",
+            "--lingxu-event-id",
+            "42",
+            "--lingxu-cookie-file",
+            str(cookie_file),
+            "--coordinator",
+            "none",
+            "--msg-port",
+            "9600",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["coordinator_backend"] == "none"
+    assert captured["msg_port"] == 9600
+
+
+def test_main_rejects_lingxu_without_cookie(monkeypatch) -> None:
+    monkeypatch.setenv("LINGXU_COOKIE", "")
+    monkeypatch.setenv("LINGXU_COOKIE_FILE", "")
+
     result = CliRunner().invoke(
         cli.main,
         [
