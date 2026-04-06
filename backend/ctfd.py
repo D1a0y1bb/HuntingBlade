@@ -203,6 +203,9 @@ class CTFdClient:
             logger.warning("Could not fetch solved challenges", exc_info=True)
             return set()
 
+    async def release_challenge_env(self, challenge_ref: Any) -> None:
+        return None
+
     async def pull_challenge(self, challenge: dict[str, Any], output_dir: str) -> str:
         """Download a challenge's distfiles and write metadata.yml.
 

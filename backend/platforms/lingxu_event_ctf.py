@@ -102,6 +102,10 @@ class LingxuEventCTFClient:
             return payload.strip()
         return str(payload).strip() if payload else ""
 
+    def _is_release_idempotent_message(self, message: str) -> bool:
+        normalized = message.strip()
+        return normalized in {"该环境正在释放", "没有运行的环境"}
+
     def _normalize_success_payload(self, status: str, flag: str, message: str) -> SubmitResult:
         if status == "correct":
             return SubmitResult("correct", message, f'CORRECT — "{flag}" accepted. {message}'.strip())
@@ -366,6 +370,26 @@ class LingxuEventCTFClient:
             yaml.dump(metadata, allow_unicode=True, default_flow_style=False, sort_keys=False),
             encoding="utf-8",
         )
+        return None
+
+    async def release_challenge_env(self, challenge_ref: Any) -> None:
+        challenge_id = self._platform_challenge_id_from_ref(challenge_ref)
+        event_id = self._event_id_from_ref(challenge_ref)
+
+        response, payload = await self._post(f"/event/{event_id}/ctf/{challenge_id}/release/")
+        message = self._extract_message(payload)
+
+        if response.status_code >= 400:
+            raise RuntimeError(message or f"release failed with HTTP {response.status_code}")
+        if isinstance(payload, dict):
+            if payload.get("error"):
+                raise RuntimeError(message or "release failed")
+            status = payload.get("status")
+            if status in (None, 2):
+                return None
+            if status == 3 and self._is_release_idempotent_message(message):
+                return None
+            raise RuntimeError(message or f"release failed with status {status}")
         return None
 
     async def submit_flag(self, challenge_ref: Any, flag: str) -> SubmitResult:

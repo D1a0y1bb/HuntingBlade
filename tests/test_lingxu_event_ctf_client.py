@@ -588,3 +588,184 @@ async def test_submit_flag_normalizes_already_solved_from_http_400() -> None:
         message="您已提交了正确的Flag",
         display='ALREADY SOLVED — "FLAG{real}" accepted. 您已提交了正确的Flag',
     )
+
+
+@pytest.mark.asyncio
+async def test_release_challenge_env_posts_release_with_csrf_header_for_challenge_meta() -> None:
+    seen_headers: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_headers.append(dict(request.headers))
+        assert request.method == "POST"
+        assert request.url.path == "/event/84/ctf/137/release/"
+        return httpx.Response(200, json={"msg": "释放成功"})
+
+    client = LingxuEventCTFClient(
+        base_url="https://lx.example.com",
+        event_id=42,
+        cookie="sessionid=sid123; csrftoken=csrf456",
+        transport=httpx.MockTransport(handler),
+    )
+    meta = ChallengeMeta(
+        name="Warmup Task",
+        platform="lingxu-event-ctf",
+        event_id=84,
+        platform_challenge_id=137,
+    )
+
+    try:
+        await client.release_challenge_env(meta)
+    finally:
+        await client.close()
+
+    assert len(seen_headers) == 1
+    assert seen_headers[0]["x-csrftoken"] == "csrf456"
+
+
+@pytest.mark.asyncio
+async def test_release_challenge_env_omits_csrf_header_when_cookie_has_no_token() -> None:
+    seen_headers: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_headers.append(dict(request.headers))
+        assert request.method == "POST"
+        assert request.url.path == "/event/42/ctf/137/release/"
+        return httpx.Response(200, json={"msg": "释放成功"})
+
+    client = LingxuEventCTFClient(
+        base_url="https://lx.example.com",
+        event_id=42,
+        cookie="sessionid=sid123",
+        transport=httpx.MockTransport(handler),
+    )
+
+    try:
+        await client.release_challenge_env({"platform_challenge_id": 137})
+    finally:
+        await client.close()
+
+    assert len(seen_headers) == 1
+    assert "x-csrftoken" not in seen_headers[0]
+
+
+@pytest.mark.asyncio
+async def test_release_challenge_env_accepts_dict_ref_with_explicit_event_id() -> None:
+    seen_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_paths.append(request.url.path)
+        return httpx.Response(200, json={"message": "释放成功"})
+
+    client = LingxuEventCTFClient(
+        base_url="https://lx.example.com",
+        event_id=42,
+        cookie="sessionid=sid123; csrftoken=csrf456",
+        transport=httpx.MockTransport(handler),
+    )
+
+    try:
+        await client.release_challenge_env({"event_id": 99, "platform_challenge_id": 204})
+    finally:
+        await client.close()
+
+    assert seen_paths == ["/event/99/ctf/204/release/"]
+
+
+@pytest.mark.asyncio
+async def test_release_challenge_env_raises_on_http_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/event/42/ctf/137/release/"
+        return httpx.Response(500, json={"msg": "释放失败"})
+
+    client = LingxuEventCTFClient(
+        base_url="https://lx.example.com",
+        event_id=42,
+        cookie="sessionid=sid123; csrftoken=csrf456",
+        transport=httpx.MockTransport(handler),
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="释放失败"):
+            await client.release_challenge_env({"platform_challenge_id": 137})
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_release_challenge_env_raises_on_payload_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/event/42/ctf/137/release/"
+        return httpx.Response(200, json={"error": "释放失败"})
+
+    client = LingxuEventCTFClient(
+        base_url="https://lx.example.com",
+        event_id=42,
+        cookie="sessionid=sid123; csrftoken=csrf456",
+        transport=httpx.MockTransport(handler),
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="释放失败"):
+            await client.release_challenge_env({"platform_challenge_id": 137})
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_release_challenge_env_raises_on_status_1() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/event/42/ctf/137/release/"
+        return httpx.Response(200, json={"status": 1, "msg": "开始释放"})
+
+    client = LingxuEventCTFClient(
+        base_url="https://lx.example.com",
+        event_id=42,
+        cookie="sessionid=sid123; csrftoken=csrf456",
+        transport=httpx.MockTransport(handler),
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="开始释放"):
+            await client.release_challenge_env({"platform_challenge_id": 137})
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message", ["该环境正在释放", "没有运行的环境"])
+async def test_release_challenge_env_accepts_idempotent_status_3_messages(message: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/event/42/ctf/137/release/"
+        return httpx.Response(200, json={"status": 3, "msg": message})
+
+    client = LingxuEventCTFClient(
+        base_url="https://lx.example.com",
+        event_id=42,
+        cookie="sessionid=sid123; csrftoken=csrf456",
+        transport=httpx.MockTransport(handler),
+    )
+
+    try:
+        await client.release_challenge_env({"platform_challenge_id": 137})
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_release_challenge_env_raises_on_non_idempotent_status_3_message() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/event/42/ctf/137/release/"
+        return httpx.Response(200, json={"status": 3, "msg": "释放失败"})
+
+    client = LingxuEventCTFClient(
+        base_url="https://lx.example.com",
+        event_id=42,
+        cookie="sessionid=sid123; csrftoken=csrf456",
+        transport=httpx.MockTransport(handler),
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="释放失败"):
+            await client.release_challenge_env({"platform_challenge_id": 137})
+    finally:
+        await client.close()
