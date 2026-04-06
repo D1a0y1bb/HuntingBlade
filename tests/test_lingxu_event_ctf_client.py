@@ -157,7 +157,7 @@ async def test_pull_challenge_writes_extended_metadata_and_downloads_attachment(
     assert metadata["category"] == "misc"
     assert metadata["description"].strip() == "题目描述"
     assert metadata["value"] == 500
-    assert metadata["connection_info"] == "nc chall.example.com 31337"
+    assert metadata["connection_info"] == ""
     assert metadata["solves"] == 12
     assert metadata["platform"] == "lingxu-event-ctf"
     assert metadata["platform_url"] == "https://lx.example.com"
@@ -170,6 +170,112 @@ async def test_pull_challenge_writes_extended_metadata_and_downloads_attachment(
     assert meta.platform == "lingxu-event-ctf"
     assert meta.platform_challenge_id == 137
     assert meta.requires_env_start is True
+
+
+@pytest.mark.asyncio
+async def test_prepare_challenge_prefers_public_target_over_internal_addr(tmp_path) -> None:
+    challenge_dir = tmp_path / "web-task-137"
+    challenge_dir.mkdir()
+    metadata_path = challenge_dir / "metadata.yml"
+    metadata_path.write_text(
+        yaml.dump(
+            {
+                "name": "Web Task",
+                "platform": "lingxu-event-ctf",
+                "event_id": 42,
+                "platform_challenge_id": 137,
+                "requires_env_start": True,
+                "connection_info": "",
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/event/42/ctf/137/begin/":
+            return httpx.Response(200, json={"status": 2, "msg": "您已经开启该题目"})
+        if request.url.path == "/event/42/ctf/137/run/":
+            return httpx.Response(200, json={"status": 2, "msg": "启动成功"})
+        if request.url.path == "/event/42/ctf/137/addr/":
+            return httpx.Response(
+                200,
+                json={
+                    "domain_addr": "http://b744b16e.clsadp.com/",
+                    "ext_id": "192.168.10.20:51416",
+                },
+            )
+        raise AssertionError(f"unexpected path: {request.url.path}")
+
+    client = LingxuEventCTFClient(
+        base_url="https://lx.example.com",
+        event_id=42,
+        cookie="sessionid=sid123",
+        transport=httpx.MockTransport(handler),
+    )
+
+    try:
+        await client.prepare_challenge(str(challenge_dir))
+    finally:
+        await client.close()
+
+    metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["connection_info"] == "http://b744b16e.clsadp.com/"
+
+
+@pytest.mark.asyncio
+async def test_prepare_challenge_prefers_public_nc_target_over_internal_addr(tmp_path) -> None:
+    challenge_dir = tmp_path / "pwn-task-137"
+    challenge_dir.mkdir()
+    metadata_path = challenge_dir / "metadata.yml"
+    metadata_path.write_text(
+        yaml.dump(
+            {
+                "name": "Pwn Task",
+                "platform": "lingxu-event-ctf",
+                "event_id": 42,
+                "platform_challenge_id": 137,
+                "requires_env_start": True,
+                "connection_info": "",
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/event/42/ctf/137/begin/":
+            return httpx.Response(200, json={"status": 2, "msg": "您已经开启该题目"})
+        if request.url.path == "/event/42/ctf/137/run/":
+            return httpx.Response(200, json={"status": 2, "msg": "启动成功"})
+        if request.url.path == "/event/42/ctf/137/addr/":
+            return httpx.Response(
+                200,
+                json={
+                    "ext_id": [
+                        "192.168.10.20:51415",
+                        "gamebox.yunyansec.com:25375",
+                    ],
+                },
+            )
+        raise AssertionError(f"unexpected path: {request.url.path}")
+
+    client = LingxuEventCTFClient(
+        base_url="https://lx.example.com",
+        event_id=42,
+        cookie="sessionid=sid123",
+        transport=httpx.MockTransport(handler),
+    )
+
+    try:
+        await client.prepare_challenge(str(challenge_dir))
+    finally:
+        await client.close()
+
+    metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["connection_info"] == "nc gamebox.yunyansec.com 25375"
 
 
 @pytest.mark.asyncio

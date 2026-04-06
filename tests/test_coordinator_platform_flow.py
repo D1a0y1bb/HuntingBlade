@@ -478,6 +478,80 @@ async def test_do_spawn_swarm_returns_preflight_failed_when_prepare_raises(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_do_spawn_swarm_refreshes_lingxu_env_with_stale_internal_connection_info(tmp_path: Path) -> None:
+    challenge_name = "env-task"
+
+    class RefreshingPlatform(FakePlatform):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.prepare_calls: list[str] = []
+
+        async def pull_challenge(self, challenge: dict[str, Any], output_dir: str) -> str:
+            challenge_dir = Path(output_dir) / "env-task-137"
+            challenge_dir.mkdir(parents=True, exist_ok=True)
+            (challenge_dir / "distfiles").mkdir(exist_ok=True)
+            (challenge_dir / "metadata.yml").write_text(
+                "\n".join(
+                    [
+                        f"name: {challenge_name}",
+                        "category: pwn",
+                        "value: 300",
+                        "description: env task",
+                        "platform: lingxu-event-ctf",
+                        "platform_challenge_id: 137",
+                        "requires_env_start: true",
+                        "connection_info: 'nc 192.168.10.20 51415'",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            return str(challenge_dir)
+
+        async def prepare_challenge(self, challenge_dir: str) -> None:
+            self.prepare_calls.append(challenge_dir)
+            metadata_path = Path(challenge_dir) / "metadata.yml"
+            metadata_path.write_text(
+                "\n".join(
+                    [
+                        f"name: {challenge_name}",
+                        "category: pwn",
+                        "value: 300",
+                        "description: env task",
+                        "platform: lingxu-event-ctf",
+                        "platform_challenge_id: 137",
+                        "requires_env_start: true",
+                        "connection_info: 'nc gamebox.yunyansec.com 25375'",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+    platform = RefreshingPlatform(
+        all_challenges=[
+            {
+                "name": challenge_name,
+                "category": "pwn",
+                "value": 300,
+            }
+        ]
+    )
+    deps = CoordinatorDeps(
+        ctfd=platform,
+        cost_tracker=CostTracker(),
+        settings=make_settings(),
+        model_specs=[],
+        challenges_root=str(tmp_path),
+    )
+
+    result = await coordinator_core.do_spawn_swarm(deps, challenge_name)
+
+    assert result == f"Swarm spawned for {challenge_name} with 0 models"
+    assert platform.prepare_calls == [str(tmp_path / "env-task-137")]
+    refreshed = ChallengeMeta.from_yaml(tmp_path / "env-task-137" / "metadata.yml")
+    assert refreshed.connection_info == "nc gamebox.yunyansec.com 25375"
+
+
+@pytest.mark.asyncio
 async def test_do_spawn_swarm_skips_unsupported_before_preflight(tmp_path: Path) -> None:
     challenge_name = "unsupported-env"
 

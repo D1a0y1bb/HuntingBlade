@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
 from dataclasses import dataclass, field
@@ -130,6 +131,38 @@ class LingxuEventCTFClient:
             return f"nc {host_port.group(1)} {host_port.group(2)}"
         return text
 
+    def _connection_host(self, target: str) -> str:
+        text = target.strip()
+        if not text:
+            return ""
+        if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", text):
+            return urlparse(text).hostname or ""
+        if text.startswith("nc "):
+            parts = text.split()
+            if len(parts) >= 3:
+                return parts[1]
+            return ""
+        host_port = re.fullmatch(r"([^:\s]+):(\d+)", text)
+        if host_port:
+            return host_port.group(1)
+        return ""
+
+    def _is_private_connection_target(self, target: str) -> bool:
+        host = self._connection_host(target)
+        if not host:
+            return False
+        if host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:
+            return True
+        try:
+            addr = ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        return addr.is_private or addr.is_loopback or addr.is_link_local
+
+    def _prefer_public_targets(self, targets: list[str]) -> list[str]:
+        public_targets = [target for target in targets if not self._is_private_connection_target(target)]
+        return public_targets or targets
+
     def _format_connection_info(self, payload: Any) -> str:
         lines: list[str] = []
 
@@ -158,7 +191,7 @@ class LingxuEventCTFClient:
         elif ext_id is not None:
             add_line(ext_id)
 
-        return "\n".join(lines)
+        return "\n".join(self._prefer_public_targets(lines))
 
     def _platform_challenge_id_from_ref(self, challenge_ref: Any) -> int:
         if hasattr(challenge_ref, "platform_challenge_id"):
@@ -247,12 +280,13 @@ class LingxuEventCTFClient:
 
     def _build_metadata(self, challenge: dict[str, Any], detail: dict[str, Any]) -> dict[str, Any]:
         score = detail.get("score")
+        requires_env_start = detail.get("task_type") == 1
         metadata = {
             "name": challenge.get("name") or f"challenge-{challenge['id']}",
             "category": challenge.get("category", ""),
             "description": self._to_markdown(detail.get("desc")),
             "value": score if score is not None else challenge.get("value", 0),
-            "connection_info": detail.get("link_path") or "",
+            "connection_info": "" if requires_env_start else self._format_connection_info({"domain_addr": detail.get("link_path")}),
             "solves": detail.get("parse_count", 0),
             "platform": "lingxu-event-ctf",
             "platform_url": self.base_url.rstrip("/"),
@@ -260,7 +294,7 @@ class LingxuEventCTFClient:
             "platform_challenge_id": challenge["id"],
             "test_type": detail.get("task_type"),
             "answer_mode": detail.get("answer_mode"),
-            "requires_env_start": detail.get("task_type") == 1,
+            "requires_env_start": requires_env_start,
             "unsupported_reason": "",
         }
         if detail.get("answer_mode") == 2:

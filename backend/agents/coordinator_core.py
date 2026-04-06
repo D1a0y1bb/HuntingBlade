@@ -3,15 +3,66 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
+import re
 from pathlib import Path
+from urllib.parse import urlparse
 
 from backend.deps import CoordinatorDeps
 from backend.prompts import ChallengeMeta
 from backend.solver_base import FLAG_FOUND
 
 logger = logging.getLogger(__name__)
+
+
+def _connection_host(target: str) -> str:
+    text = target.strip()
+    if not text:
+        return ""
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", text):
+        return urlparse(text).hostname or ""
+    if text.startswith("nc "):
+        parts = text.split()
+        if len(parts) >= 3:
+            return parts[1]
+        return ""
+    host_port = re.fullmatch(r"([^:\s]+):(\d+)", text)
+    if host_port:
+        return host_port.group(1)
+    return ""
+
+
+def _is_private_connection_target(target: str) -> bool:
+    host = _connection_host(target)
+    if not host:
+        return False
+    if host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return addr.is_private or addr.is_loopback or addr.is_link_local
+
+
+def _needs_prepare(meta: ChallengeMeta) -> bool:
+    if not meta.requires_env_start:
+        return False
+
+    connection_info = str(meta.connection_info or "").strip()
+    if not connection_info:
+        return True
+
+    if meta.platform != "lingxu-event-ctf":
+        return False
+
+    targets = [line.strip() for line in connection_info.splitlines() if line.strip()]
+    if len(targets) != 1:
+        return True
+
+    return _is_private_connection_target(targets[0])
 
 
 async def do_fetch_challenges(deps: CoordinatorDeps) -> str:
@@ -76,7 +127,7 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
     if meta.unsupported_reason:
         logger.info("challenge_skipped_unsupported name=%s reason=%s", challenge_name, meta.unsupported_reason)
         return f"Challenge '{challenge_name}' skipped: {meta.unsupported_reason}"
-    if meta.requires_env_start and not meta.connection_info:
+    if _needs_prepare(meta):
         try:
             await deps.ctfd.prepare_challenge(deps.challenge_dirs[challenge_name])
         except Exception as e:
