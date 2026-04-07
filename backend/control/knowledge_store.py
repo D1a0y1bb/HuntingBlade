@@ -75,16 +75,16 @@ class KnowledgeStore:
         applied_ids: set[str] | None = None,
     ) -> list[KnowledgeEntry]:
         normalized_category = _norm(category)
-        normalized_challenge_name = challenge_name.strip()
+        normalized_challenge_name = _norm(challenge_name)
         applied = applied_ids or set()
 
         matched: list[KnowledgeEntry] = []
         for entry in self._entries.values():
             if entry.id in applied:
                 continue
-            if entry.source_challenge == normalized_challenge_name:
+            if _norm(entry.source_challenge) == normalized_challenge_name:
                 continue
-            if not _entry_matches_category(entry, normalized_category):
+            if not _entry_matches_applicability(entry, normalized_category):
                 continue
             matched.append(entry)
 
@@ -176,6 +176,19 @@ class KnowledgeStore:
                 applicability=applicability,
             )
 
+        if lower_finding.startswith("category rule:"):
+            content = finding.split(":", 1)[1].strip() or finding
+            applicability = {"category": category} if category else {}
+            return self.upsert(
+                scope="category",
+                kind="exploit_pattern",
+                content=content,
+                evidence=f"verified in {challenge_name}: {finding}",
+                confidence=0.85,
+                source_challenge=challenge_name,
+                applicability=applicability,
+            )
+
         return None
 
 
@@ -193,7 +206,11 @@ def _normalize_applicability(applicability: dict[str, str]) -> dict[str, str]:
     return normalized
 
 
-def _entry_matches_category(entry: KnowledgeEntry, category: str) -> bool:
+def _entry_matches_applicability(entry: KnowledgeEntry, category: str) -> bool:
+    expected_platform = _norm(entry.applicability.get("platform", ""))
+    if expected_platform == "lingxu-event-ctf":
+        return True
+
     expected_category = _norm(entry.applicability.get("category", ""))
     if not expected_category or expected_category == "*":
         return True

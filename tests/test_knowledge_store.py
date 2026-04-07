@@ -39,3 +39,43 @@ def test_match_returns_category_knowledge_and_skips_applied_entry() -> None:
     )
 
     assert matched == []
+
+
+def test_match_includes_lingxu_platform_knowledge_even_when_category_differs() -> None:
+    store = KnowledgeStore()
+    entry = store.upsert(
+        scope="platform",
+        kind="platform_rule",
+        content="always start env via begin/run/addr first",
+        evidence="observed across lingxu event tasks",
+        confidence=0.95,
+        source_challenge="hatephp",
+        applicability={"category": "web", "platform": "lingxu-event-ctf"},
+    )
+
+    matched = store.match(
+        category="crypto",
+        challenge_name="web2",
+        applied_ids=set(),
+    )
+
+    assert len(matched) == 1
+    assert matched[0].id == entry.id
+
+
+def test_promote_category_rule_from_memory_as_exploit_pattern() -> None:
+    store = KnowledgeStore()
+    memory = ChallengeWorkingMemory(
+        challenge_name="web-sql",
+        verified_findings=["category rule: php web题优先检查 phar metadata deserialize"],
+    )
+
+    promoted = store.promote_from_memory(
+        challenge_name="web-sql",
+        category="web",
+        memory=memory,
+    )
+
+    assert len(promoted) == 1
+    assert promoted[0].scope == "category"
+    assert promoted[0].kind == "exploit_pattern"
