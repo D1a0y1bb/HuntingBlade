@@ -52,13 +52,7 @@ class CoordinatorDeps:
     max_concurrent_challenges: int = 10
     working_memory_store: WorkingMemoryStore = field(default_factory=WorkingMemoryStore)
     knowledge_store: KnowledgeStore = field(default_factory=KnowledgeStore)
-    policy_engine: PolicyEngine = field(
-        default_factory=lambda: PolicyEngine(
-            max_concurrent_challenges=10,
-            bump_cooldown_seconds=60,
-            stall_seconds=180,
-        )
-    )
+    policy_engine: PolicyEngine | None = None
 
     msg_port: int = 0  # 0 = auto-pick free port
 
@@ -75,3 +69,21 @@ class CoordinatorDeps:
     trace_offsets: dict[str, int] = field(default_factory=dict)
     trace_pending_lines: dict[str, bytes] = field(default_factory=dict)
     trace_file_tokens: dict[str, tuple[int, int]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.policy_engine is None:
+            self.policy_engine = PolicyEngine(
+                max_concurrent_challenges=self.max_concurrent_challenges,
+                bump_cooldown_seconds=60,
+                stall_seconds=180,
+            )
+            return
+
+        if self.policy_engine.max_concurrent_challenges == self.max_concurrent_challenges:
+            return
+
+        self.policy_engine = PolicyEngine(
+            max_concurrent_challenges=self.max_concurrent_challenges,
+            bump_cooldown_seconds=self.policy_engine.bump_cooldown_seconds,
+            stall_seconds=self.policy_engine.stall_seconds,
+        )

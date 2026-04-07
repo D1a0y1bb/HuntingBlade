@@ -1,8 +1,12 @@
+from types import SimpleNamespace
+
 from backend.control.actions import BroadcastKnowledge, BumpSolver, SpawnSwarm
 from backend.control.knowledge_store import KnowledgeStore
 from backend.control.policy_engine import PolicyEngine
 from backend.control.state import ChallengeState, CompetitionState, SwarmState
 from backend.control.working_memory import WorkingMemoryStore
+from backend.cost_tracker import CostTracker
+from backend.deps import CoordinatorDeps
 
 
 def test_policy_engine_spawns_unsolved_challenge_when_capacity_available() -> None:
@@ -98,3 +102,165 @@ def test_policy_engine_broadcasts_matched_knowledge_once_per_swarm() -> None:
             knowledge_id=entry.id,
         )
     ]
+
+
+def test_policy_engine_does_not_spawn_when_terminal_swarm_already_exists() -> None:
+    for terminal_status in ("finished", "cancelled", "error"):
+        state = CompetitionState(
+            known_challenges={"echo"},
+            known_solved=set(),
+            challenges={"echo": ChallengeState(challenge_name="echo", status="pending", category="pwn")},
+            swarms={
+                "echo": SwarmState(
+                    challenge_name="echo",
+                    status=terminal_status,
+                )
+            },
+        )
+        engine = PolicyEngine(max_concurrent_challenges=3, bump_cooldown_seconds=60, stall_seconds=120)
+
+        actions = engine.plan_tick(
+            competition=state,
+            working_memory_store=WorkingMemoryStore(),
+            knowledge_store=KnowledgeStore(),
+            now=100.0,
+        )
+
+        assert actions == []
+
+
+def test_policy_engine_advisor_bump_requires_running_stalled_and_cooled_swarm() -> None:
+    engine = PolicyEngine(max_concurrent_challenges=3, bump_cooldown_seconds=30, stall_seconds=60)
+    suggestions = [
+        SimpleNamespace(
+            action_hint="bump_solver",
+            challenge_name="rsa-running-not-stalled",
+            model_spec="azure/gpt-5.4",
+            guidance="Try gcd on shared modulus",
+            reason="advisor bump",
+        ),
+        SimpleNamespace(
+            action_hint="bump_solver",
+            challenge_name="rsa-finished",
+            model_spec="azure/gpt-5.4",
+            guidance="Try gcd on shared modulus",
+            reason="advisor bump",
+        ),
+        SimpleNamespace(
+            action_hint="bump_solver",
+            challenge_name="rsa-running-stalled",
+            model_spec="azure/gpt-5.4",
+            guidance="Try common modulus attack",
+            reason="advisor bump",
+        ),
+    ]
+    competition = CompetitionState(
+        swarms={
+            "rsa-running-not-stalled": SwarmState(
+                challenge_name="rsa-running-not-stalled",
+                status="running",
+                running_models=["azure/gpt-5.4"],
+                last_bump_at=0.0,
+                last_progress_at=90.0,
+            ),
+            "rsa-finished": SwarmState(
+                challenge_name="rsa-finished",
+                status="finished",
+                running_models=["azure/gpt-5.4"],
+                last_bump_at=0.0,
+                last_progress_at=0.0,
+            ),
+            "rsa-running-stalled": SwarmState(
+                challenge_name="rsa-running-stalled",
+                status="running",
+                running_models=["azure/gpt-5.4"],
+                last_bump_at=0.0,
+                last_progress_at=0.0,
+            ),
+        }
+    )
+
+    actions = engine.apply_advisor_suggestions(
+        suggestions=suggestions,
+        competition=competition,
+        now=100.0,
+    )
+
+    assert actions == [
+        BumpSolver(
+            challenge_name="rsa-running-stalled",
+            model_spec="azure/gpt-5.4",
+            guidance="Try common modulus attack",
+            reason="advisor bump",
+        )
+    ]
+
+
+def test_policy_engine_advisor_broadcast_skips_non_running_and_applied_knowledge() -> None:
+    engine = PolicyEngine(max_concurrent_challenges=3, bump_cooldown_seconds=30, stall_seconds=60)
+    suggestions = [
+        SimpleNamespace(
+            action_hint="broadcast_knowledge",
+            challenge_name="web-finished",
+            message="use php filters first",
+            source="advisor",
+            knowledge_id="k-finished",
+        ),
+        SimpleNamespace(
+            action_hint="broadcast_knowledge",
+            challenge_name="web-running",
+            message="repeat old knowledge",
+            source="advisor",
+            knowledge_id="k-used",
+        ),
+        SimpleNamespace(
+            action_hint="broadcast_knowledge",
+            challenge_name="web-running",
+            message="fresh knowledge",
+            source="advisor",
+            knowledge_id="k-fresh",
+        ),
+    ]
+    competition = CompetitionState(
+        swarms={
+            "web-finished": SwarmState(
+                challenge_name="web-finished",
+                status="finished",
+                running_models=[],
+                applied_knowledge_ids=set(),
+            ),
+            "web-running": SwarmState(
+                challenge_name="web-running",
+                status="running",
+                running_models=["azure/gpt-5.4"],
+                applied_knowledge_ids={"k-used"},
+            ),
+        }
+    )
+
+    actions = engine.apply_advisor_suggestions(
+        suggestions=suggestions,
+        competition=competition,
+        now=100.0,
+    )
+
+    assert actions == [
+        BroadcastKnowledge(
+            challenge_name="web-running",
+            message="fresh knowledge",
+            source="advisor",
+            knowledge_id="k-fresh",
+        )
+    ]
+
+
+def test_coordinator_deps_syncs_policy_engine_concurrency_with_override() -> None:
+    deps = CoordinatorDeps(
+        ctfd=SimpleNamespace(),
+        cost_tracker=CostTracker(),
+        settings=SimpleNamespace(),
+        max_concurrent_challenges=4,
+    )
+
+    assert deps.max_concurrent_challenges == 4
+    assert deps.policy_engine.max_concurrent_challenges == 4

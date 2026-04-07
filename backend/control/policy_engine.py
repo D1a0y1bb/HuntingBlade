@@ -80,7 +80,6 @@ class PolicyEngine:
         competition: CompetitionState,
         now: float,
     ) -> list[PolicyAction]:
-        del now
         actions: list[PolicyAction] = []
         for suggestion in suggestions:
             action_hint = str(getattr(suggestion, "action_hint", "")).strip().lower()
@@ -89,7 +88,12 @@ class PolicyEngine:
                 continue
 
             swarm = competition.swarms[challenge_name]
+            if swarm.status != "running":
+                continue
+
             if action_hint == "bump_solver":
+                if not self._should_bump_swarm(swarm=swarm, now=now):
+                    continue
                 model_spec = str(getattr(suggestion, "model_spec", "")).strip()
                 if not model_spec and swarm.running_models:
                     model_spec = swarm.running_models[0]
@@ -108,6 +112,9 @@ class PolicyEngine:
                 continue
 
             if action_hint == "broadcast_knowledge":
+                knowledge_id = str(getattr(suggestion, "knowledge_id", "")).strip()
+                if knowledge_id and knowledge_id in swarm.applied_knowledge_ids:
+                    continue
                 message = str(getattr(suggestion, "message", "")).strip()
                 if not message:
                     message = str(getattr(suggestion, "guidance", "")).strip()
@@ -119,7 +126,7 @@ class PolicyEngine:
                         challenge_name=challenge_name,
                         message=message,
                         source=source,
-                        knowledge_id=str(getattr(suggestion, "knowledge_id", "")).strip(),
+                        knowledge_id=knowledge_id,
                     )
                 )
 
@@ -137,8 +144,7 @@ class PolicyEngine:
             challenge = competition.challenges.get(challenge_name)
             if challenge and challenge.status in {"solved", "skipped"}:
                 continue
-            swarm = competition.swarms.get(challenge_name)
-            if swarm is not None and swarm.status == "running":
+            if challenge_name in competition.swarms:
                 continue
             return challenge_name
         return ""
