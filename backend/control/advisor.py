@@ -52,6 +52,7 @@ class AdvisorContext:
     challenge_name: str
     memory_summary: str
     knowledge_summary: str
+    strategy_summary: str = ""
 
 
 @dataclass(slots=True)
@@ -79,6 +80,7 @@ def render_advisor_prompt(context: AdvisorContext) -> str:
         f"challenge_name: {context.challenge_name}\n"
         f"memory_summary: {context.memory_summary}\n"
         f"knowledge_summary: {context.knowledge_summary}\n"
+        f"strategy_summary: {context.strategy_summary}\n"
     )
 
 

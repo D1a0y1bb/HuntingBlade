@@ -241,10 +241,8 @@ def _refresh_strategy_states(deps: CoordinatorDeps, now: float) -> None:
                 memory=memory,
                 result_record=deps.results.get(challenge_name),
                 now=now,
-                stall_seconds=deps.policy_engine.stall_seconds if deps.policy_engine else 180,
-                bump_cooldown_seconds=(
-                    deps.policy_engine.bump_cooldown_seconds if deps.policy_engine else 60
-                ),
+                stall_seconds=getattr(deps.policy_engine, "stall_seconds", 180),
+                bump_cooldown_seconds=getattr(deps.policy_engine, "bump_cooldown_seconds", 60),
             )
         except Exception:
             logger.exception("Strategy reduction failed for %s", challenge_name)
@@ -613,6 +611,7 @@ async def _execute_advisor_tick(
             challenge_name=challenge_name,
             memory_summary=_summarize_memory(deps, challenge_name),
             knowledge_summary=_summarize_knowledge(deps, challenge_name),
+            strategy_summary=_summarize_strategy(deps, challenge_name),
         )
         try:
             suggestions.extend(await advisor.suggest(context))

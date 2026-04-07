@@ -2668,6 +2668,8 @@ async def test_run_event_loop_applies_advisor_suggestions_via_policy_engine(
     assert captured_contexts[0].challenge_name == "rsa"
     assert "common modulus" in captured_contexts[0].memory_summary
     assert "Reusable knowledge" in captured_contexts[0].knowledge_summary
+    assert "stage=exploit" in captured_contexts[0].strategy_summary
+    assert "common modulus" in captured_contexts[0].strategy_summary
     assert entry.id in captured_contexts[0].knowledge_summary
     assert policy_calls
     assert policy_calls[0][0].action_hint == "bump_solver"
