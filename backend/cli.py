@@ -79,8 +79,8 @@ def _setup_logging(verbose: bool = False) -> None:
 @click.option(
     "--coordinator",
     default="claude",
-    type=click.Choice(["claude", "codex", "none"]),
-    help="协调器后端；none 表示无总控整场模式",
+    type=click.Choice(["claude", "codex", "azure", "none"]),
+    help="协调器后端；azure 表示只走 .env 的 API 总控，none 表示无总控整场模式",
 )
 @click.option("--max-challenges", default=10, type=int, help="最大并发题目数")
 @click.option(
@@ -314,6 +314,17 @@ async def _run_coordinator(
         from backend.agents.codex_coordinator import run_codex_coordinator
 
         results = await run_codex_coordinator(
+            settings=settings,
+            model_specs=model_specs,
+            challenges_root=challenges_dir,
+            no_submit=no_submit,
+            coordinator_model=coordinator_model,
+            msg_port=msg_port,
+        )
+    elif coordinator_backend == "azure":
+        from backend.agents.azure_coordinator import run_azure_coordinator
+
+        results = await run_azure_coordinator(
             settings=settings,
             model_specs=model_specs,
             challenges_root=challenges_dir,

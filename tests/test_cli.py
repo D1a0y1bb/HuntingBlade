@@ -38,6 +38,7 @@ def test_main_help_uses_english_options_with_chinese_help() -> None:
     assert "--platform" in result.output
     assert "claude" in result.output
     assert "codex" in result.output
+    assert "azure" in result.output
     assert "none" in result.output
     assert "--lingxu-cookie-file" in result.output
     assert "--all-solved-policy" in result.output
@@ -187,6 +188,50 @@ def test_main_accepts_headless_coordinator(monkeypatch, tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert captured["coordinator_backend"] == "none"
     assert captured["msg_port"] == 9600
+
+
+def test_main_accepts_azure_coordinator(monkeypatch, tmp_path: Path) -> None:
+    cookie_file = tmp_path / "lingxu.cookie"
+    cookie_file.write_text("sessionid=sid123", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    async def fake_run_coordinator(
+        settings,
+        model_specs,
+        challenges_dir,
+        no_submit,
+        coordinator_model,
+        coordinator_backend,
+        max_challenges,
+        msg_port=0,
+    ) -> None:
+        captured["settings"] = settings
+        captured["coordinator_backend"] = coordinator_backend
+        captured["coordinator_model"] = coordinator_model
+
+    monkeypatch.setattr(cli, "_run_coordinator", fake_run_coordinator)
+
+    result = CliRunner().invoke(
+        cli.main,
+        [
+            "--platform",
+            "lingxu-event-ctf",
+            "--platform-url",
+            "https://lx.example.com",
+            "--lingxu-event-id",
+            "42",
+            "--lingxu-cookie-file",
+            str(cookie_file),
+            "--coordinator",
+            "azure",
+            "--coordinator-model",
+            "gpt-5.4-mini",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["coordinator_backend"] == "azure"
+    assert captured["coordinator_model"] == "gpt-5.4-mini"
 
 
 def test_main_rejects_lingxu_without_cookie(monkeypatch) -> None:

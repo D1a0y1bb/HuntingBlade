@@ -8,7 +8,12 @@ import boto3
 from pydantic_ai.models import Model
 from pydantic_ai.models.bedrock import BedrockConverseModel, BedrockModelSettings
 from pydantic_ai.models.google import GoogleModel, GoogleModelSettings
-from pydantic_ai.models.openai import OpenAIModel, OpenAIModelSettings
+from pydantic_ai.models.openai import (
+    OpenAIChatModel,
+    OpenAIChatModelSettings,
+    OpenAIResponsesModel,
+    OpenAIResponsesModelSettings,
+)
 from pydantic_ai.providers.bedrock import BedrockProvider
 from pydantic_ai.providers.google import GoogleProvider
 from pydantic_ai.providers.openai import OpenAIProvider
@@ -69,7 +74,7 @@ def resolve_model(spec: str, settings: Settings) -> Model:
                     provider=BedrockProvider(bedrock_client=client),
                 )
         case "azure":
-            return OpenAIModel(
+            return OpenAIResponsesModel(
                 model_id,
                 provider=OpenAIProvider(
                     base_url=settings.azure_openai_endpoint,
@@ -77,7 +82,7 @@ def resolve_model(spec: str, settings: Settings) -> Model:
                 ),
             )
         case "zen":
-            return OpenAIModel(
+            return OpenAIChatModel(
                 model_id,
                 provider=OpenAIProvider(
                     base_url="https://opencode.ai/zen/v1",
@@ -109,11 +114,16 @@ def resolve_model_settings(spec: str) -> ModelSettings:
                 bedrock_cache_tool_definitions=True,
                 bedrock_cache_messages=True,
             )
-        case "azure" | "zen":
-            # Azure/Zen use OpenAI chat completions — server-side prompt caching
-            # is automatic, no explicit config needed. Set max_tokens to avoid
-            # reserving the full context window.
-            return OpenAIModelSettings(
+        case "azure":
+            return OpenAIResponsesModelSettings(
+                max_tokens=128_000,
+                openai_reasoning_effort="medium",
+                openai_reasoning_summary="auto",
+                openai_truncation="auto",
+            )
+        case "zen":
+            # Zen remains on the chat-completions-compatible path for now.
+            return OpenAIChatModelSettings(
                 max_tokens=128_000,
             )
         case "google":

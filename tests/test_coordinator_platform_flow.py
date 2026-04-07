@@ -571,6 +571,103 @@ async def test_run_headless_coordinator_uses_shared_event_loop(
 
 
 @pytest.mark.asyncio
+async def test_run_azure_coordinator_uses_shared_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.agents.azure_coordinator import run_azure_coordinator
+
+    platform = FakePlatform()
+    captured: dict[str, Any] = {}
+
+    def fake_build_deps(
+        settings: Settings,
+        model_specs: list[str] | None = None,
+        challenges_root: str = "challenges",
+        no_submit: bool = False,
+        challenge_dirs: dict[str, str] | None = None,
+        challenge_metas: dict[str, ChallengeMeta] | None = None,
+        platform: Any = None,
+    ) -> tuple[Any, CostTracker, CoordinatorDeps]:
+        deps = CoordinatorDeps(
+            ctfd=platform or FakePlatform(),
+            cost_tracker=CostTracker(),
+            settings=settings,
+            model_specs=model_specs or [],
+            challenges_root=challenges_root,
+            no_submit=no_submit,
+        )
+        return deps.ctfd, deps.cost_tracker, deps
+
+    async def fake_run_event_loop(
+        deps: CoordinatorDeps,
+        ctfd: Any,
+        cost_tracker: CostTracker,
+        turn_fn,
+        status_interval: int = 60,
+    ) -> dict[str, Any]:
+        captured["deps"] = deps
+        captured["ctfd"] = ctfd
+        captured["cost_tracker"] = cost_tracker
+        captured["status_interval"] = status_interval
+        captured["turn_result"] = await turn_fn("STATUS: 0 solved")
+        return {"results": {}, "total_cost_usd": 0.0, "total_tokens": 0}
+
+    class FakeCoordinator:
+        def __init__(self, deps: CoordinatorDeps, settings: Settings, model_spec: str) -> None:
+            captured["coordinator_model_spec"] = model_spec
+
+        async def start(self) -> None:
+            captured["started"] = True
+
+        async def turn(self, message: str) -> None:
+            captured.setdefault("messages", []).append(message)
+
+        async def stop(self) -> None:
+            captured["stopped"] = True
+
+    monkeypatch.setattr("backend.agents.azure_coordinator.build_deps", fake_build_deps)
+    monkeypatch.setattr("backend.agents.azure_coordinator.run_event_loop", fake_run_event_loop)
+    monkeypatch.setattr("backend.agents.azure_coordinator.AzureCoordinator", FakeCoordinator)
+
+    result = await run_azure_coordinator(
+        settings=make_settings(platform="lingxu-event-ctf"),
+        model_specs=["azure/gpt-5.4-mini"],
+        challenges_root="challenges",
+        no_submit=True,
+        coordinator_model="gpt-5.4",
+        msg_port=9701,
+        platform=platform,
+    )
+
+    assert result["results"] == {}
+    assert captured["deps"].msg_port == 9701
+    assert captured["ctfd"] is platform
+    assert captured["turn_result"] is None
+    assert captured["coordinator_model_spec"] == "azure/gpt-5.4"
+    assert captured["started"] is True
+    assert captured["stopped"] is True
+
+
+def test_normalize_azure_coordinator_model_accepts_bare_model_name() -> None:
+    from backend.agents.azure_coordinator import _normalize_azure_coordinator_model
+
+    assert _normalize_azure_coordinator_model("gpt-5.4") == "azure/gpt-5.4"
+
+
+def test_normalize_azure_coordinator_model_accepts_explicit_azure_spec() -> None:
+    from backend.agents.azure_coordinator import _normalize_azure_coordinator_model
+
+    assert _normalize_azure_coordinator_model("azure/gpt-5.4-mini") == "azure/gpt-5.4-mini"
+
+
+def test_normalize_azure_coordinator_model_rejects_non_azure_spec() -> None:
+    from backend.agents.azure_coordinator import _normalize_azure_coordinator_model
+
+    with pytest.raises(ValueError):
+        _normalize_azure_coordinator_model("google/gemini-3-flash-preview")
+
+
+@pytest.mark.asyncio
 async def test_auto_spawn_one_skips_platforms_without_materialization_support(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

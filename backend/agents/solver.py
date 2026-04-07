@@ -202,15 +202,34 @@ class Solver:
 
         try:
             from pydantic_ai.usage import UsageLimits
-            result = await self._agent.run(
-                "Solve this CTF challenge." if not self._messages else "Continue solving.",
-                deps=self.deps,
-                message_history=self._messages if self._messages else None,
-                usage_limits=UsageLimits(request_limit=None),
-            )
+
+            prompt = "Solve this CTF challenge." if not self._messages else "Continue solving."
+            usage_limits = UsageLimits(request_limit=None)
+
+            if provider_from_spec(self.model_spec) == "azure":
+                async with self._agent.run_stream(
+                    prompt,
+                    deps=self.deps,
+                    message_history=self._messages if self._messages else None,
+                    usage_limits=usage_limits,
+                ) as result:
+                    output = await result.get_output()
+                    usage = result.usage()
+                    all_messages = result.all_messages()
+                    new_messages = result.new_messages()
+            else:
+                result = await self._agent.run(
+                    prompt,
+                    deps=self.deps,
+                    message_history=self._messages if self._messages else None,
+                    usage_limits=usage_limits,
+                )
+                output = result.output
+                usage = result.usage()
+                all_messages = result.all_messages()
+                new_messages = result.new_messages()
 
             duration = time.monotonic() - t0
-            usage = result.usage()
 
             self.cost_tracker.record(
                 self.agent_name, usage, self.model_id,
@@ -225,11 +244,11 @@ class Solver:
                 agent_usage.cost_usd if agent_usage else 0.0,
             )
 
-            self._messages = result.all_messages()
+            self._messages = all_messages
 
             # Trace model responses from new messages
             from pydantic_ai.messages import ModelResponse, TextPart
-            for msg in result.new_messages():
+            for msg in new_messages:
                 if isinstance(msg, ModelResponse):
                     text_parts = [p.content for p in msg.parts if isinstance(p, TextPart)]
                     text = " ".join(text_parts)
@@ -240,7 +259,6 @@ class Solver:
                         output_tokens=msg_usage.output_tokens if msg_usage else 0,
                     )
 
-            output = result.output
             if isinstance(output, FlagFound):
                 self._flag = output.flag
                 self._findings = f"Flag found via {output.method}: {output.flag}"
