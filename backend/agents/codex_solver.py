@@ -20,6 +20,7 @@ import logging
 import time
 from typing import Any
 
+from backend.capabilities import build_challenge_profile, codex_runtime_profile, resolve_capabilities
 from backend.cost_tracker import CostTracker
 from backend.ctfd import CTFdClient
 from backend.loop_detect import LoopDetector
@@ -54,66 +55,12 @@ def _next_id() -> int:
     return next(_rpc_counter)
 
 
-# DynamicToolSpec[] for thread/start
-SANDBOX_TOOLS = [
-    {
-        "name": "bash",
-        "description": "Execute a bash command in the Docker sandbox.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "command": {"type": "string"},
-                "timeout_seconds": {"type": "integer", "default": 60},
-            },
-            "required": ["command"],
-        },
-    },
-    {
-        "name": "read_file",
-        "description": "Read a file from the sandbox container.",
-        "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
-    },
-    {
-        "name": "write_file",
-        "description": "Write a file into the sandbox container.",
-        "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]},
-    },
-    {
-        "name": "list_files",
-        "description": "List files in a directory in the sandbox.",
-        "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "default": "/challenge/distfiles"}}},
-    },
-    {
-        "name": "submit_flag",
-        "description": "Submit a flag to CTFd. Returns CORRECT, ALREADY SOLVED, or INCORRECT.",
-        "inputSchema": {"type": "object", "properties": {"flag": {"type": "string"}}, "required": ["flag"]},
-    },
-    {
-        "name": "web_fetch",
-        "description": "Fetch a URL from the host network.",
-        "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "method": {"type": "string", "default": "GET"}, "body": {"type": "string", "default": ""}}, "required": ["url"]},
-    },
-    {
-        "name": "webhook_create",
-        "description": "Create a webhook.site token for out-of-band HTTP callbacks (XSS, SSRF, bot challenges).",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "webhook_get_requests",
-        "description": "Retrieve HTTP requests received by a webhook.site token.",
-        "inputSchema": {"type": "object", "properties": {"uuid": {"type": "string"}}, "required": ["uuid"]},
-    },
-    {
-        "name": "view_image",
-        "description": "View an image file from the sandbox for visual/steg analysis.",
-        "inputSchema": {"type": "object", "properties": {"filename": {"type": "string"}}, "required": ["filename"]},
-    },
-    {
-        "name": "notify_coordinator",
-        "description": "Send a strategic message to the coordinator (e.g. flag format discovery, shared vulnerability, request for help).",
-        "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}}, "required": ["message"]},
-    },
-]
+def _build_codex_resolved_capabilities(*, challenge_dir: str, meta: ChallengeMeta, use_vision: bool):
+    distfile_names = list_distfiles(challenge_dir)
+    return resolve_capabilities(
+        build_challenge_profile(meta, distfile_names),
+        codex_runtime_profile(use_vision=use_vision),
+    )
 
 
 class CodexSolver:
@@ -178,10 +125,18 @@ class CodexSolver:
         container_arch = arch_result.stdout.strip() or "unknown"
 
         distfile_names = list_distfiles(self.challenge_dir)
-        system_prompt = build_prompt(
-            self.meta, distfile_names, container_arch=container_arch,
-            has_named_tools=True,
+        resolved_capabilities = _build_codex_resolved_capabilities(
+            challenge_dir=self.challenge_dir,
+            meta=self.meta,
+            use_vision=self.use_vision,
         )
+        system_prompt = build_prompt(
+            self.meta,
+            distfile_names,
+            container_arch=container_arch,
+            resolved_capabilities=resolved_capabilities,
+        )
+        dynamic_tools = list(resolved_capabilities.dynamic_tool_specs)
 
         self._proc = await asyncio.create_subprocess_exec(
             "codex", "app-server",
@@ -201,7 +156,7 @@ class CodexSolver:
 
         # thread/start — personality is enum, system prompt in baseInstructions
         # Prepend sandbox path reminder to prevent models from using host paths
-        tool_names = [t["name"] for t in SANDBOX_TOOLS]
+        tool_names = [t["name"] for t in dynamic_tools]
         sandbox_preamble = (
             "IMPORTANT: You are running inside a Docker sandbox. "
             "All files are under /challenge/ — distfiles at /challenge/distfiles/, "
@@ -216,7 +171,7 @@ class CodexSolver:
             "approvalPolicy": "on-request",
             "sandbox": "read-only",
             "serviceTier": "flex",
-            "dynamicTools": SANDBOX_TOOLS,
+            "dynamicTools": dynamic_tools,
         }
         # Reasoning effort for models that support it
         reasoning = REASONING_EFFORT.get(self.model_id)
