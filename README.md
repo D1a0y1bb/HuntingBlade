@@ -1,182 +1,119 @@
-# HuntingBlade（CTF Agent Fork）
+# Hunting Blade
 
-一个面向 CTF（Capture The Flag）的自治解题代理系统。它会把同一道题同时交给多个大模型并行求解，谁先找到正确 flag，谁就赢。原项目在一个周末内搭起来，并在 **BSidesSF 2026 CTF** 中拿到了 **52/52 全解 + 第 1 名**。项目由 [Veria Labs](https://verialabs.com) 构建，团队成员来自 [.;,;.](https://ctftime.org/team/222911)（smiley），该队曾是 [CTFTime 2024 和 2025 年美国排名第 1 的 CTF 战队](https://ctftime.org/stats/2024/US)。
+Hunting Blade 是基于 `ctf-agent` 的二开版本。在同一道题交给多个大模型并行求解的基础理念上进一步工程化：支持整场轮询、国内竞赛平台接入、手动导入题目题、自动收尾与监听新题目下发、凌虚竞赛平台环境自动释放，以及赛后 writeup 的自动撰写。下面是几个值得注意的点：
 
-## 项目战绩
+1. `ctf-solve` 不传 `--challenge` 时是整场模式；传了 `--challenge` 时是单题模式。
+2. 如果你本机没有可用的 `codex` 或 Claude SDK，不要直接使用默认模型列表；请显式传 `--models`，并优先选择 `--coordinator none`。
+3. `--all-solved-policy` 默认值是 `wait`，所以全题解完后会继续等待新题，不会自动退出。
 
-| 比赛 | 解出题数 | 结果 |
-|------|:-------:|------|
-| **BSidesSF 2026** | 52/52（100%） | **第 1 名（$1,500）** |
+## 主要命令
 
-该系统覆盖常见 CTF 题型，包括：
+| 命令 | 用途 |
+|------|------|
+| `ctf-solve` | 整场比赛求解，或对单题目录进行本地调试 |
+| `ctf-msg` | 给正在运行的协调器发送操作员消息 |
+| `ctf-import` | 把人工整理的题面、附件、连接信息导入为标准本地题目目录 |
 
-1. `pwn`
-2. `rev`
-3. `crypto`
-4. `forensics`
-5. `web`
-6. `misc`
+## 增强改进
 
-## 它是怎么工作的
+| 能力 | 当前状态 | 说明 |
+|------|----------|------|
+| 中文化说明 | 已完成 | README、CLI 帮助文案、使用示例均以中文为主 |
+| 平台接入 | 已支持 | 当前支持 `ctfd` 和 `lingxu-event-ctf` |
+| 无总控整场模式 | 已支持 | `--coordinator none`，适合并发紧张或无本地 Codex/Claude 的场景 |
+| 手动导题 | 已支持 | `ctf-import` 可写入 `metadata.yml` 和 `distfiles/` |
+| 自动收尾 | 已支持 | `wait` / `exit` / `idle` 三种整场结束策略 |
+| 环境释放 | 已支持 | 平台确认提交成功后，自动释放需要环境的题目 |
+| Writeup 输出 | 已支持 | `off` / `confirmed` / `solved` 三种策略 |
 
-整体上分成两层：
+## 上游关系
 
-- **Coordinator（协调器）**：负责盯盘整个比赛，检测新题、管理并发、查看各 solver 的进度、在卡住时补充策略提示。
-- **Swarm（解题群）**：每道题启动一个 swarm，里面再并行跑多个模型实例，竞争寻找 flag。
+本仓库 fork 自 `ctf-agent`。上游项目由 Veria Labs 构建，曾在 BSidesSF 2026 CTF 中拿到 52/52 全解和第 1 名。这个 README 主要描述的是当前这个 fork 的功能和用法，而不是重复上游战绩。
 
-```text
-                        +-----------------+
-                        | Competition     |
-                        | Platform        |
-                        | (CTFd / Lingxu) |
-                        +--------+--------+
-                                 |
-                        +--------v--------+
-                        |  Poller (5s)    |
-                        +--------+--------+
-                                 |
-                        +--------v--------+
-                        | Coordinator     |
-                        | (Claude/Codex/  |
-                        |  Headless)      |
-                        +--------+--------+
-                                 |
-              +------------------+------------------+
-              |                  |                  |
-     +--------v--------+ +------v---------+ +------v---------+
-     | Swarm:          | | Swarm:         | | Swarm:         |
-     | challenge-1     | | challenge-2    | | challenge-N    |
-     |                 | |                | |                |
-     |  Opus (med)     | |  Opus (med)    | |                |
-     |  Opus (max)     | |  Opus (max)    | |     ...        |
-     |  GPT-5.4        | |  GPT-5.4       | |                |
-     |  GPT-5.4-mini   | |  GPT-5.4-mini  | |                |
-     |  GPT-5.3-codex  | |  GPT-5.3-codex | |                |
-     +--------+--------+ +--------+-------+ +----------------+
-              |                    |
-     +--------v--------+  +-------v--------+
-     | Docker Sandbox  |  | Docker Sandbox |
-     | (isolated)      |  | (isolated)     |
-     |                 |  |                |
-     | pwntools, r2,   |  | pwntools, r2,  |
-     | gdb, python...  |  | gdb, python... |
-     +-----------------+  +----------------+
+## 支持范围
+
+| 项目 | 状态 | 说明 |
+|------|------|------|
+| 平台 `ctfd` | 已支持 | 推荐使用 `--ctfd-url` + `--ctfd-token` |
+| 平台 `lingxu-event-ctf` | 已支持 | 当前面向“赛事 CTF”；`check` 模式会跳过，不启动 swarm |
+| 题型 | 已覆盖主要类型 | `pwn`、`rev`、`crypto`、`forensics`、`web`、`misc` |
+| 运行方式 | 已支持 | 整场模式、单题模式、手动导题 |
+| 协调模式 | 已支持 | `claude`、`codex`、`none` |
+
+## 架构设计
+
+```mermaid
+flowchart TB
+    classDef platform fill:#eff6ff,stroke:#2563eb,stroke-width:1.4px,color:#0f172a;
+    classDef control fill:#f5f3ff,stroke:#7c3aed,stroke-width:1.4px,color:#0f172a;
+    classDef swarm fill:#f0fdf4,stroke:#16a34a,stroke-width:1.4px,color:#0f172a;
+    classDef sandbox fill:#fff7ed,stroke:#ea580c,stroke-width:1.4px,color:#0f172a;
+    classDef artifact fill:#f8fafc,stroke:#64748b,stroke-width:1.2px,color:#0f172a;
+
+    subgraph Platforms["竞赛平台"]
+        CTFD["CTFd"]:::platform
+        LX["凌虚赛事 CTF"]:::platform
+    end
+
+    Poller["Poller<br/>每 5 秒同步题单、已解状态、题目详情"]:::control
+    Coordinator["Coordinator<br/>claude / codex / none"]:::control
+
+    subgraph Swarms["题目求解层"]
+        S1["Swarm A<br/>多模型并行竞速"]:::swarm
+        S2["Swarm B<br/>多模型并行竞速"]:::swarm
+        SN["Swarm N<br/>多模型并行竞速"]:::swarm
+    end
+
+    subgraph Sandboxes["隔离执行层"]
+        B1["Solver Container<br/>pwntools / r2 / gdb / python"]:::sandbox
+        B2["Solver Container<br/>每个模型实例独立容器"]:::sandbox
+        B3["Solver Container<br/>提交、分析、利用都在沙箱内执行"]:::sandbox
+    end
+
+    ChallengeDir["challenges/<slug>/<br/>metadata.yml + distfiles/"]:::artifact
+    Logs["logs/trace-*.jsonl"]:::artifact
+    Writeups["writeups/<platform-event>/"]:::artifact
+
+    CTFD --> Poller
+    LX --> Poller
+    Poller --> Coordinator
+    Poller --> ChallengeDir
+    Coordinator --> S1
+    Coordinator --> S2
+    Coordinator --> SN
+    S1 --> B1
+    S2 --> B2
+    SN --> B3
+    S1 -.执行轨迹.-> Logs
+    S2 -.执行轨迹.-> Logs
+    SN -.题解草稿.-> Writeups
 ```
 
-每个 solver 都运行在隔离的 Docker 容器里。容器内预装了大量 CTF 工具，solver 会持续尝试不同路线，直到找到正确 flag 或被其他 solver 抢先解决。
+整体流程很简单：
 
-## 核心能力
+1. `Poller` 每 5 秒从平台同步题单和已解状态。
+2. `Coordinator` 根据当前模式决定是否启用顶层总控大模型。
+3. 每道未解题会启动一个 `Swarm`，每个 `Swarm` 内再并行运行多个 solver 容器。
+4. 平台确认提交正确后，系统会自动停掉对应 swarm，并按配置决定是否释放环境、生成 wp、退出整场。
 
-- **多模型竞速**：同一题可以同时丢给多个模型。
-- **多平台拉题**：协调器会从已接入竞赛平台自动发现新题并启动 swarm。
-- **自动停题**：一旦题目在平台侧被确认已解，对应 swarm 会自动结束。
-- **协调器调度**：在 `claude` / `codex` 模式下，顶层协调器会读取 solver trace，在 solver 卡住时发出更具体的技术提示。
-- **跨 solver 共享发现**：同一道题的多个 solver 会通过消息总线互通阶段性发现。
-- **Docker 沙箱隔离**：分析、利用、爆破和脚本执行都在容器里完成。
-- **人工干预**：你可以在比赛进行中通过 `ctf-msg` 给协调器发送提示或指令。
-- **单题/全场双模式**：既能跑整场比赛，也能单独调试某一道题。
+## 快速安装
 
-## 默认模型编排
-
-默认模型列表定义在 [backend/models.py](backend/models.py)：
-
-| Model Spec | 提供方 | 说明 |
-|------------|--------|------|
-| `claude-sdk/claude-opus-4-6/medium` | Claude SDK | 均衡型 |
-| `claude-sdk/claude-opus-4-6/max` | Claude SDK | 深度推理 |
-| `codex/gpt-5.4` | Codex | 默认最强通用 solver |
-| `codex/gpt-5.4-mini` | Codex | 更快，适合简单题 |
-| `codex/gpt-5.3-codex` | Codex | 高推理强度 |
-
-几点容易混淆但很重要：
-
-- `--coordinator` 只决定“顶层协调器”怎么跑，支持 `claude`、`codex`、`none`。
-- 每道题 swarm 里真正跑哪些 solver，由 `--models` 或 [backend/models.py](backend/models.py) 决定。
-- `--coordinator none` 只是不再额外启一个总控大脑，并不等于自动把 solver 模型也改成 API 模型。
-- 如果你本机没有 `codex` 或 Claude SDK 能力，就不要直接吃默认模型列表，应该显式传 `azure/...`、`bedrock/...`、`google/...`、`zen/...` 这类 API 型模型。
-
-## 沙箱里有什么工具
-
-每个 solver 都会拿到一个独立 Docker 容器。工具包括：
-
-| 类别 | 主要工具 |
-|------|----------|
-| 二进制分析 | `radare2`, `gdb`, `objdump`, `binwalk`, `strings`, `readelf` |
-| Pwn | `pwntools`, `ROPgadget`, `angr`, `unicorn`, `capstone` |
-| Crypto | `SageMath`, `RsaCtfTool`, `z3`, `gmpy2`, `pycryptodome`, `cado-nfs` |
-| 取证 | `volatility3`, `mmls`, `fls`, `icat`, `foremost`, `exiftool` |
-| Stego | `steghide`, `stegseek`, `zsteg`, `ImageMagick`, `tesseract` |
-| Web | `curl`, `nmap`, `requests`, `flask` |
-| 其他 | `ffmpeg`, `sox`, `Pillow`, `numpy`, `scipy`, `PyTorch`, `podman` |
-
-另外，代码里还提示可以在容器中运行：
-
-```bash
-cat /tools.txt
-```
-
-用来查看镜像里实际安装的工具列表。
-
-## 项目目录说明
-
-你可以先从这些目录和文件理解项目：
-
-| 路径 | 作用 |
-|------|------|
-| [backend/cli.py](backend/cli.py) | CLI 入口，定义了 `ctf-solve`、`ctf-msg` 和 `ctf-import` |
-| [backend/config.py](backend/config.py) | 环境变量和默认配置 |
-| [backend/models.py](backend/models.py) | 默认模型列表、provider 解析、vision 支持 |
-| [backend/agents/](backend/agents) | 协调器、solver、swarm 的核心逻辑 |
-| [backend/platforms/](backend/platforms) | 竞赛平台抽象、平台工厂，以及 CTFd / 凌虚赛事 CTF 接入实现 |
-| [backend/challenge_import.py](backend/challenge_import.py) | 手动导题逻辑，负责落盘 `metadata.yml` 和递归导入附件 |
-| [backend/tools/](backend/tools) | solver 可以调用的工具封装 |
-| [backend/sandbox.py](backend/sandbox.py) | Docker 容器的创建、挂载和执行逻辑 |
-| [backend/ctfd.py](backend/ctfd.py) | CTFd 登录、拉题、交 flag |
-| [backend/prompts.py](backend/prompts.py) | 给 solver 的系统提示词构造 |
-| [pull_challenges.py](pull_challenges.py) | 手动从 CTFd 批量下载题目到本地 |
-| [sandbox/](sandbox) | 沙箱镜像构建文件 |
-
-运行时还会出现这些目录：
-
-| 路径 | 作用 |
-|------|------|
-| `challenges/` | 拉下来的题目目录，默认保存位置 |
-| `logs/` | 每个 solver 的 JSONL trace 日志 |
-
-## 环境要求
+### 环境要求
 
 - Python `3.14+`
 - `uv`
 - Docker
-- 至少一种可用的平台接入方式：
-  - CTFd 地址和访问凭据
-  - 或凌虚赛事 CTF 的平台地址、赛事 ID 与有效 Cookie
-- 如果要用 `codex/...` solver，或 `--coordinator codex`，需要本机能直接执行 `codex`
-- 如果要用 `claude-sdk/...` solver，或 `--coordinator claude`，需要本机有 Claude SDK 对应能力
-- 如果你使用 API 型模型并配合 `--coordinator none`，则不要求本机安装 Codex / Claude 作为顶层总控
+- 至少一种平台凭据：CTFd 的 URL 与 Token或凌虚赛事 CTF 的平台根地址、赛事 ID、有效 Cookie
+- 至少一种可用的模型接入方式：本机 `codex`、本机 Claude SDK、或 API 型模型，例如 `azure/...`、`google/...`、`bedrock/...`、`zen/...`
 
-- `.env` 里的环境变量会被自动读取。
-- CLI 参数优先级高于 `.env`。
-- 命令参数名保持英文；`--help`、README 和示例说明使用中文。
-- 当前代码默认使用 Docker 沙箱，并且容器配置里包含 `SYS_PTRACE`、`SYS_ADMIN`、`/dev/loop-control` 等挂载项。
-
-## 安装
-
-### 1. 安装 Python 依赖
+### 安装依赖
 
 ```bash
 uv sync
-```
-
-### 2. 构建沙箱镜像
-
-```bash
 docker build -f sandbox/Dockerfile.sandbox -t ctf-sandbox .
 ```
 
-如果你打算使用别的镜像名，也可以后续在 `ctf-solve` 里通过 `--image` 指定。
-
-### 3. 配置环境变量
+### `.env` 示例
 
 先复制模板：
 
@@ -184,155 +121,112 @@ docker build -f sandbox/Dockerfile.sandbox -t ctf-sandbox .
 cp .env.example .env
 ```
 
-当前代码中实际支持的主要环境变量如下：
+下面是一份实用的 `.env` 参考。你不需要全部填写，只要填你实际要用的那部分。
 
 ```env
 # CTFd
 CTFD_URL=https://ctf.example.com
 CTFD_TOKEN=ctfd_your_api_token_here
-CTFD_USER=admin
-CTFD_PASS=admin
 
-# 常见模型凭据
-ANTHROPIC_API_KEY=sk-ant-...
+# OpenAI-compatible gateway
 OPENAI_API_KEY=sk-...
 OPENAI_BASE_URL=https://api.masterjie.eu.cc/v1
-GEMINI_API_KEY=
-
-# 可选 provider / fallback 配置
-AWS_REGION=us-east-1
-AWS_BEARER_TOKEN=
 AZURE_OPENAI_ENDPOINT=https://api.masterjie.eu.cc/v1
 AZURE_OPENAI_API_KEY=sk-...
+
+# Claude / Gemini / 其他 provider 按需填写
+ANTHROPIC_API_KEY=
+GEMINI_API_KEY=
+AWS_REGION=us-east-1
+AWS_BEARER_TOKEN=
 OPENCODE_ZEN_API_KEY=
-```
 
-建议优先使用 `CTFD_TOKEN`，其次才是 `CTFD_USER` / `CTFD_PASS` 登录方式。
-
-如果你准备走 OpenAI 兼容网关，当前 README 示例统一按这个稳定地址写：
-
-```env
-OPENAI_BASE_URL=https://api.masterjie.eu.cc/v1
-AZURE_OPENAI_ENDPOINT=https://api.masterjie.eu.cc/v1
-```
-
-它已经验证可用：
-
-- `POST /v1/chat/completions`
-- `POST /v1/responses`
-
-因此：
-
-- `azure/...` 这类 API 型 solver 可以直接吃这套 `.env`
-- `--coordinator codex` 这类走 Codex `responses` 的路径，也可以配合本机 Codex 全局配置一起使用
-- 如果你只想稳一点、不想再多占一个总控并发，优先用 `--coordinator none`
-
-## 快速开始
-
-这是最小可运行流程。下面给两个实用起点：
-
-### 快速开始 A：CTFd + 无总控 + API 模型
-
-如果你本机没有安装 Claude / Codex，或者你就是想先把整场自动调度跑通，建议从这个组合开始：
-
-```bash
-uv sync
-docker build -f sandbox/Dockerfile.sandbox -t ctf-sandbox .
-cp .env.example .env
-# 编辑 .env，填入平台凭据与 OPENAI 兼容网关密钥
-
-uv run ctf-solve \
-  --ctfd-url https://ctf.example.com \
-  --ctfd-token ctfd_your_token \
-  --coordinator none \
-  --models azure/gpt-5.4 \
-  --models azure/gpt-5.4-mini \
-  --challenges-dir challenges \
-  --max-challenges 3 \
-  --msg-port 9400 \
-  -v
-```
-
-### 快速开始 B：凌虚赛事 CTF + 无总控 + API 模型
-
-如果你当前要打的是凌虚赛事 CTF，这条命令最贴近真实使用：
-
-```bash
-uv run ctf-solve \
-  --platform lingxu-event-ctf \
-  --platform-url https://ctf.yunyansec.com \
-  --lingxu-event-id 198 \
-  --lingxu-cookie-file .secrets/lingxu.cookie \
-  --coordinator none \
-  --models azure/gpt-5.4 \
-  --models azure/gpt-5.4-mini \
-  --challenges-dir challenges \
-  --max-challenges 3 \
-  --msg-port 9400 \
-  --no-submit \
-  -v
-```
-
-如果一切正常，协调器会：
-
-1. 连接你指定的平台。
-2. 初始化轮询器，每 5 秒检查一次新题和已解题。
-3. 为当前未解题自动拉取题目数据。
-4. 把题目写入 `challenges/<slug>/metadata.yml` 和 `distfiles/`。
-5. 为每道题启动一个 swarm。
-6. 在题目被解出后自动停止对应 swarm。
-
-## 详细用法
-
-### 用法 1：跑整场比赛（CTFd，推荐起手式）
-
-如果你更在意“先稳定跑起来”，推荐直接用无总控模式：
-
-```bash
-uv run ctf-solve \
-  --ctfd-url https://ctf.example.com \
-  --ctfd-token ctfd_your_token \
-  --coordinator none \
-  --models azure/gpt-5.4 \
-  --models azure/gpt-5.4-mini \
-  --challenges-dir challenges \
-  --max-challenges 3 \
-  --msg-port 9400 \
-  -v
+# Lingxu Event CTF
+PLATFORM=lingxu-event-ctf
+PLATFORM_URL=https://ctf.yunyansec.com
+LINGXU_EVENT_ID=198
+LINGXU_COOKIE=sessionid=your_session_cookie
 ```
 
 说明：
 
-- 不传 `--challenge` 时，`ctf-solve` 会进入 **协调器模式**。
-- 协调器会自动发现未解题，并在容量允许时启动 swarm。
-- `--coordinator none` 表示不用顶层大模型总控，只保留自动拉题、自动起 swarm、自动监控状态。
-- 这个模式特别适合你不想额外占用总控并发、只想依赖 swarm 自动把整场比赛持续跑下去的场景。
-- `--max-challenges 3` 表示最多同时处理 3 道题。
-- 实际 solver 并发大约是：`max_challenges * 模型数`。
-- 如果 `--coordinator` 是 `claude` 或 `codex`，还会额外多占用 1 个顶层协调器并发。
-- 如果你的模型网关最大并发有限，例如只有 10，建议优先：
-  - 减少 `--models`
-  - 降低 `--max-challenges`
-  - 或直接使用 `--coordinator none`
-- 如果你打算人工发送提示，最好显式设置 `--msg-port 9400`；否则默认 `0` 表示随机挑一个空闲端口，只能从日志里看实际端口号。
+- `.env` 会自动读取，CLI 参数优先级高于 `.env`。
+- 对 CTFd，优先使用 `CTFD_TOKEN`；账号密码方式只适合你自己额外扩展，不是当前 CLI 主路径。
+- 凌虚竞赛平台，Cookie 里只要 `sessionid` 可用通常就够了；浏览器里没有 `csrftoken` 也属于正常情况。
 
-### 用法 2：跑整场比赛（凌虚赛事 CTF）
+### 注意事项
 
-当前凌虚接入支持范围如下：
+如果你直接运行：
 
-- 仅支持“赛事 CTF”
-- 仅支持 `FLAG` 模式题
-- 支持环境型、外链型、附件型题目
-- `check` 模式会被识别并跳过，不会启动 swarm
+```bash
+uv run ctf-solve ...
+```
 
-使用前提：
+而且没有传 `--models`，程序会使用默认模型列表：
 
-1. 先在浏览器中登录凌虚平台并进入目标赛事。
-2. 导出当前站点 Cookie，至少包含 `sessionid`；如果浏览器里还有 `csrftoken`，可以一并保留，但不是必需。
-3. 推荐把 Cookie 存到本地文件，例如 `.secrets/lingxu.cookie`。
-4. 打开到赛事赛段页面即可，不需要先手动把每道容器题都“开启环境”。
+- `claude-sdk/claude-opus-4-6/medium`
+- `claude-sdk/claude-opus-4-6/max`
+- `codex/gpt-5.4`
+- `codex/gpt-5.4-mini`
+- `codex/gpt-5.3-codex`
 
-示例：
+这意味着：你需要本机具备对应的 `codex` / Claude SDK 运行能力。如果你没有这些本地能力，请显式传 API 型模型，例如 `azure/gpt-5.4`、`azure/gpt-5.4-mini`。如果你只想先稳定跑通整场流程，优先用 `--coordinator none`。
+
+## 运行方式
+
+| 目标 | 推荐组合 | 原因 |
+|------|----------|------|
+| 先跑起来 | `--coordinator none` + 2 到 3 个 API 型 `--models` | 不依赖本地 Codex/Claude，总控也不额外占并发 |
+| 要顶层策略调度 | `--coordinator codex` 或 `--coordinator claude` | 总控会读取 solver trace 并广播提示 |
+| 只做流程回归，不真提交 | `--no-submit` + `--writeup-mode solved` | 能保留大部分真实流程，又不会真正交 flag |
+| 解完就退出 | `--all-solved-policy exit` | 没有未解题且没有活动 swarm 时直接结束 |
+| 解完后再等一会儿 | `--all-solved-policy idle --all-solved-idle-seconds 600` | 适合比赛末尾等加题或等平台刷新 |
+
+## 并发估算
+
+整场模式下，实际 solver 容器并发大致等于：
+
+```text
+模型数量 × max_challenges
+```
+
+再加上：如果 `--coordinator` 是 `codex` 或 `claude`，还会额外多一个总控并发。
+
+- 2 个模型，`--max-challenges 3`，大约是 6 个 solver 并发。
+- 3 个模型，`--max-challenges 3`，大约是 9 个 solver 并发。
+- 如果此时还开了 `--coordinator codex`，再预留 1 个总控并发更稳妥。
+
+  如果你的模型网关最高并发只有 10，建议从下面两组起步：
+
+- 2 个模型 + `--max-challenges 3`
+- 3 个模型 + `--max-challenges 2`
+
+## 快速开始
+
+### 1. CTFd 整场，API 模型，无总控
+
+这是最适合第一次跑通流程的起手式：
+
+```bash
+uv run ctf-solve \
+  --ctfd-url https://ctf.example.com \
+  --ctfd-token ctfd_your_token \
+  --coordinator none \
+  --models azure/gpt-5.4 \
+  --models azure/gpt-5.4-mini \
+  --challenges-dir challenges \
+  --max-challenges 3 \
+  --msg-port 9400 \
+  -v
+```
+
+这条命令适合：
+
+- 你本机没有 `codex` 或 Claude SDK
+- 你想优先验证整场轮询、拉题、起 swarm、自动收尾是否正常
+- 你不想额外消耗一个总控并发
+
+### 2. 凌虚赛事 CTF 整场，API 模型，无总控
 
 ```bash
 uv run ctf-solve \
@@ -343,76 +237,42 @@ uv run ctf-solve \
   --coordinator none \
   --models azure/gpt-5.4 \
   --models azure/gpt-5.4-mini \
+  --challenges-dir challenges \
   --max-challenges 3 \
   --msg-port 9400 \
-  --no-submit \
   -v
 ```
 
-补充说明：
+这条命令适合：
 
-- `--platform` 不传时默认仍走 `ctfd`。
-- `--platform-url` 是凌虚平台根地址，不是具体题目页地址。
-- `--lingxu-cookie` 适合临时调试；长期使用更建议 `--lingxu-cookie-file`，避免命令历史泄露。
-- 现网凌虚平台只要 `sessionid` 可用即可；浏览器里看不到 `csrftoken` 属于正常情况。
-- 进入赛段页面后，程序会自动读取题单、自动拉取题面和附件。
-- 对需要环境的题目，平台适配器会在求解前自动尝试准备连接信息；一般不需要你先手动逐题点“开启环境”。
-- `--no-submit` 只是不真的提交 flag，不会阻止自动拉题、自动起 swarm、自动准备环境，但也不会触发平台确认后的自动释放环境。
+- 你在打凌虚“赛事 CTF”
+- 你只想先让整场调度稳定跑起来
+- 你不需要顶层总控大脑
 
-### 用法 3：切换协调器后端
+### 3. 启用 Codex 总控
 
-现在有三种模式：
-
-```bash
-# Claude 协调器（默认）
-uv run ctf-solve --coordinator claude ...
-
-# Codex 协调器
-uv run ctf-solve --coordinator codex ...
-
-# 无总控整场模式
-uv run ctf-solve --coordinator none ...
-```
-
-补充：
-
-- `--coordinator claude` 时，协调器默认模型是 `claude-opus-4-6`
-- `--coordinator codex` 时，代码里实际默认模型是 `gpt-5.4`
-- `--coordinator none` 时，不会再调用顶层协调器模型，只保留平台轮询、自动拉题、自动起 swarm、自动停题
-- 即使是 `--coordinator none`，`--all-solved-policy` 自动收尾、平台确认后的环境释放、以及 `--writeup-mode` writeup 生成也都照常生效。
-- `--coordinator-model` 可以覆盖默认协调器模型
-- `--coordinator none` 适合：
-  - 你本机没有装 Claude / Codex 作为总控
-  - 你的网关并发比较紧张
-  - 你不想额外占用总控并发，只想让 swarm 自动跑完整场
-  - 你只想稳定自动跑整场，不追求顶层策略调度
-- `--coordinator claude` / `codex` 适合：
-  - 你希望有顶层大模型持续查看 trace、广播提示、动态调度
-
-  例如：
+如果你本机已经配置好了 `codex`，想让顶层协调器也参与调度，可以这样跑：
 
 ```bash
 uv run ctf-solve \
+  --ctfd-url https://ctf.example.com \
+  --ctfd-token ctfd_your_token \
   --coordinator codex \
   --coordinator-model gpt-5.4 \
-  --ctfd-url https://ctf.example.com \
-  --ctfd-token ctfd_your_token
+  --models codex/gpt-5.4 \
+  --models codex/gpt-5.4-mini \
+  --max-challenges 3 \
+  --msg-port 9400 \
+  -v
 ```
 
-如果你没有本机 Codex / Claude，但又想跑整场，不要只改 `--coordinator`，还要把 solver 模型一起换成 API 型：
+要点：
 
-```bash
-uv run ctf-solve \
-  --coordinator none \
-  --models azure/gpt-5.4 \
-  --models azure/gpt-5.4-mini \
-  --ctfd-url https://ctf.example.com \
-  --ctfd-token ctfd_your_token
-```
+- `--coordinator codex` 只影响“顶层协调器”。
+- 每道题 swarm 内跑什么模型，仍由 `--models` 决定。
+- 总控会读取 solver trace，在卡住时广播更具体的策略提示。
 
-### 用法 4：只跑单道题
-
-适合本地调试、复现实验、研究单题策略。
+### 4. 单题本地调试
 
 ```bash
 uv run ctf-solve \
@@ -423,13 +283,13 @@ uv run ctf-solve \
   -v
 ```
 
-这里有个关键前提：
+单题模式的前提：
 
-- `--challenge` 接收的是一个本地题目目录
-- 该目录下至少要有 `metadata.yml`
-- 如果有附件，放在 `distfiles/` 子目录下
+- `--challenge` 传的是本地目录，不是题目名。
+- 目录下至少要有 `metadata.yml`。
+- 附件应放在 `distfiles/`。
 
-目录结构示例：
+示例目录：
 
 ```text
 challenges/example-challenge/
@@ -439,79 +299,101 @@ challenges/example-challenge/
     └── note.txt
 ```
 
-单题模式不会自动去任何平台搜索并下载这道题；你需要先准备好本地目录。
+## 按场景使用
 
-### 用法 5：手动导题到本地
-
-当平台暂时没有自动接入、题目材料来自人工整理、或你只想快速把题目落成标准目录时，可以直接使用 `ctf-import`。
-
-最小示例：
+### 场景 1：CTFd 整场自动求解
 
 ```bash
-uv run ctf-import \
-  --name "签到题" \
-  --category misc \
-  --description "阅读附件并找出 flag。" \
-  --attachment ./downloads/task.zip \
-  --output-dir ./challenges
+uv run ctf-solve \
+  --ctfd-url https://ctf.example.com \
+  --ctfd-token ctfd_your_token \
+  --coordinator none \
+  --models azure/gpt-5.4 \
+  --models azure/gpt-5.4-mini \
+  --max-challenges 3 \
+  --msg-port 9400 \
+  -v
 ```
 
-带连接信息、附件目录、标签和提示的示例：
+运行后会发生的事：
+
+1. 校验平台配置并初始化轮询器。
+2. 每 5 秒检查一次题单和已解状态。
+3. 自动把新题写入 `challenges/<slug>/metadata.yml` 与 `distfiles/`。
+4. 为每道未解题启动一个 swarm。
+5. 某道题被确认解出后，自动结束对应 swarm。
+
+### 场景 2：凌虚赛事 CTF 整场自动求解
 
 ```bash
-uv run ctf-import \
-  --name "Web1" \
-  --category web \
-  --description "分析登录流程并获取管理员权限。" \
-  --connection-info "http://target.example.com" \
-  --attachment ./downloads/web1.tar.gz \
-  --attachment-dir ./downloads/web1-assets \
-  --tag login \
-  --tag jwt \
-  --hint "先看前端接口调用关系" \
-  --output-dir ./challenges
+uv run ctf-solve \
+  --platform lingxu-event-ctf \
+  --platform-url https://ctf.yunyansec.com \
+  --lingxu-event-id 198 \
+  --lingxu-cookie-file .secrets/lingxu.cookie \
+  --coordinator none \
+  --models azure/gpt-5.4 \
+  --models azure/gpt-5.4-mini \
+  --max-challenges 3 \
+  --msg-port 9400 \
+  -v
 ```
 
-导入后会生成：
+凌虚平台这几个点很关键：
 
-- `metadata.yml`
-- `distfiles/`
+- `--platform-url` 要填平台根地址，例如 `https://ctf.yunyansec.com`，不要填前端 hash 页面。
+- Cookie 推荐放文件里，用 `--lingxu-cookie-file` 传入，避免命令历史泄露。
+- 一般不需要你先手动逐题点“开启环境”；适配器会自动做 `begin`、`run`、`addr` 这几个步骤。
+- 如果平台同时返回公网地址和内网地址，适配器会优先使用公网 `domain_addr`。
+- `check` 模式题会标记为不支持并跳过，不会卡死整场结束逻辑。
 
-如果你传入 `--attachment-dir`，其中文件会被递归复制到 `distfiles/`，solver 在 prompt 中也能看到子目录文件列表。
+### 场景 3：想要顶层总控参与调度
 
-### 用法 6：手动从 CTFd 拉题到本地
+你可以在 `claude`、`codex`、`none` 三种模式里选一种：
 
-如果你想先把题目批量拉下来，再做离线调试，可以使用 [pull_challenges.py](pull_challenges.py)：
+| 取值 | 适合场景 | 要求 |
+|------|----------|------|
+| `claude` | 你希望 Claude 作为顶层调度脑 | 本机可用 Claude SDK |
+| `codex` | 你希望 Codex 作为顶层调度脑 | 本机可用 `codex` |
+| `none` | 你不想占总控并发，只保留自动调度 | 不需要本地总控能力 |
+
+如果你没有本地 `codex` 或 Claude SDK，但又想跑整场：
 
 ```bash
-uv run python pull_challenges.py \
-  --url https://ctf.example.com \
-  --token ctfd_your_token \
-  --output ./challenges
+uv run ctf-solve \
+  --ctfd-url https://ctf.example.com \
+  --ctfd-token ctfd_your_token \
+  --coordinator none \
+  --models azure/gpt-5.4 \
+  --models azure/gpt-5.4-mini
 ```
 
-或者使用账号密码登录：
+### 场景 4：Dry-run，不真的提交 flag
 
 ```bash
-uv run python pull_challenges.py \
-  --url https://ctf.example.com \
-  --username myteam \
-  --password s3cr3t \
-  --output ./challenges
+uv run ctf-solve \
+  --platform lingxu-event-ctf \
+  --platform-url https://ctf.yunyansec.com \
+  --lingxu-event-id 198 \
+  --lingxu-cookie-file .secrets/lingxu.cookie \
+  --coordinator none \
+  --models azure/gpt-5.4-mini \
+  --no-submit \
+  --writeup-mode solved \
+  --writeup-dir tmp-writeups \
+  -v
 ```
 
-拉题完成后，每道题会生成：
+这个组合的效果：
 
-- `metadata.yml`
-- `distfiles/`
+- 不真的向平台提交 flag。
+- 仍然会执行大部分真实求解流程。
+- 不会触发“平台确认成功后的自动释放环境”。
+- 由于 `--writeup-mode solved`，只要本地 solver 成功，就仍会生成 writeup。
 
-这样你就可以直接对某道题使用 `--challenge` 单独调试。
+### 场景 5：给协调器发人工提示
 
-### 用法 7：运行过程中人工发消息
-
-如果你想在比赛中途提醒协调器关注某条思路，或者告诉它“这类题都可能是同一种洞”，可以这样做：
-
-先启动协调器：
+先启动整场：
 
 ```bash
 uv run ctf-solve \
@@ -525,85 +407,128 @@ uv run ctf-solve \
 再从另一个终端发送消息：
 
 ```bash
-uv run ctf-msg --port 9400 "注意所有 web 题先检查共享的登录逻辑和 JWT 验签。"
+uv run ctf-msg --port 9400 "优先检查所有 web 题是否共用一套登录逻辑。"
 ```
-
-默认 host 是 `127.0.0.1`。如果你不设置 `--msg-port`，协调器会随机选端口，那么你必须先从启动日志里确认实际端口号。
 
 注意：
 
-- 当 `--coordinator` 是 `claude` 或 `codex` 时，`ctf-msg` 会把你的提示送给顶层协调器。
-- 当 `--coordinator none` 时，消息仍然能被接收并记录到事件日志里，但不会有顶层大模型替你消化和二次调度。
+- `ctf-msg` 默认端口是 `9400`。
+- `--msg-port 0` 表示启动时自动找空闲端口，这时你需要从日志里看实际端口。
+- 如果当前是 `--coordinator none`，消息仍会被接收和记录，但不会再经过顶层大模型做二次调度。
 
-### 用法 8：限制参与竞速的模型
+### 场景 6：手动导题到本地
 
-`--models` 可以重复传入多次：
-
-```bash
-uv run ctf-solve \
-  --ctfd-url https://ctf.example.com \
-  --ctfd-token ctfd_your_token \
-  --models codex/gpt-5.4 \
-  --models codex/gpt-5.4-mini \
-  --models claude-sdk/claude-opus-4-6/max
-```
-
-如果你不传 `--models`，就会使用 [backend/models.py](backend/models.py) 中的默认列表。
-
-### 用法 9：仅调试流程，不真的交 flag
+最小示例：
 
 ```bash
-uv run ctf-solve \
-  --ctfd-url https://ctf.example.com \
-  --ctfd-token ctfd_your_token \
-  --no-submit \
-  -v
+uv run ctf-import \
+  --name "签到题" \
+  --category misc \
+  --description "阅读附件并找出 flag。" \
+  --attachment ./downloads/task.zip \
+  --output-dir ./challenges
 ```
 
-这个模式会保留大部分真实流程，但不会真的向 CTFd 提交 flag，适合：
+带连接信息、目录附件、标签和提示的示例：
 
-- 调试 prompt
-- 调试模型组合
-- 调试 Docker 沙箱
-- 观察 solver trace
+```bash
+uv run ctf-import \
+  --name "Web1" \
+  --category web \
+  --description "分析登录流程并获取管理员权限。" \
+  --connection-info "http://target.example.com" \
+  --attachment ./downloads/web1.tar.gz \
+  --attachment-dir ./downloads/web1-assets \
+  --tag login \
+  --tag jwt \
+  --hint "先看前端接口调用关系" \
+  --output-dir ./challenges \
+  --value 200
+```
 
-补充说明：
+导入后会生成：
 
-- `--no-submit` 不会自动释放平台环境，因为没有真实提交，也就没有平台确认成功这一步。
-- `--writeup-mode confirmed` 依赖平台确认提交成功；在 dry-run / `--no-submit` 下通常不会生成 writeup。
-- `--writeup-mode solved` 则按本地解题结果生成 writeup；即使 dry-run，只要 solver 真正解出题，也会落盘，并在复现备注里写明“未自动提交，需人工确认”。
-- 当你同时使用 `--all-solved-policy exit` 或 `idle` 时，dry-run 模式下本地已解结果也会参与“是否全解”的判断，适合自动化回归整场流程。
+```text
+challenges/web1/
+├── metadata.yml
+└── distfiles/
+    ├── web1.tar.gz
+    └── ...
+```
 
-### 用法 10：自动收尾、环境释放与 writeup
+`ctf-import` 当前行为：
 
-这几项能力现在可以单独组合使用，不依赖 `--coordinator claude` 或 `--coordinator codex`；即使使用 `--coordinator none`，也同样支持自动收尾、环境释放和 writeup。
+- 自动生成标准 `metadata.yml`
+- 自动复制单文件附件
+- 递归复制 `--attachment-dir` 中的所有文件
+- 检测附件重名冲突
+- 如果目标目录已存在，会安全替换并带回滚保护
+- 至少要求“连接信息、附件文件、附件目录”三者之一不为空
 
-`--all-solved-policy` 用于控制“整场题都解完之后怎么办”：
+### 场景 7：先把 CTFd 题目批量拉到本地再调试
 
-- `wait`：默认值。即使当前已全部解出，也继续轮询平台，等待新题或人工停止。
-- `exit`：确认当前已无未解题、且没有活动 swarm 后，协调器立即退出。
-- `idle`：先进入空闲观察期；如果持续空闲达到 `--all-solved-idle-seconds`，再退出。
+```bash
+uv run python pull_challenges.py \
+  --url https://ctf.example.com \
+  --token ctfd_your_token \
+  --output ./challenges
+```
 
-`--all-solved-idle-seconds` 只在 `--all-solved-policy idle` 时生效，并且必须大于 `0`。
+拉完以后，你就可以对任意单题目录使用：
 
-`--writeup-mode` 用于控制 writeup 何时生成：
+```bash
+uv run ctf-solve --challenge challenges/example-challenge --no-submit -v
+```
 
-- `off`：关闭 writeup。
-- `confirmed`：只有平台确认 flag 正确后才生成 writeup，适合正式比赛归档。
-- `solved`：只要 solver 本地解出题就生成 writeup；dry-run / `--no-submit` 也会生成，但会明确标注尚未自动提交。
+## 自动收尾、环境释放、writeup
 
-`--writeup-dir` 用于指定 writeup 输出根目录；实际写入路径会按平台和赛事再拆一层，例如 `--writeup-dir writeups` 时，文件会写到 `writeups/lingxu-event-ctf-198/<challenge>.md`。如果你传 `--writeup-dir writeups/custom-root`，则最终路径会变成 `writeups/custom-root/lingxu-event-ctf-198/<challenge>.md`。
+这三项能力是当前 fork 的重点增强，建议你先把语义分清。
 
-环境释放的触发条件要分清：
+### `--all-solved-policy`
 
-- 只有平台确认提交成功，且题目元信息里 `requires_env_start: true`，才会自动释放环境。
-- 环境题也是在平台确认正确后才会触发自动释放，不会因为“本地看起来解出来了”就提前释放。
-- `--no-submit` 不自动释放环境，因为不会产生平台确认成功结果。
-- 非环境题即使提交成功，只要 `requires_env_start: false`，也不会调用自动释放。
+| 取值 | 行为 | 适合场景 |
+|------|------|----------|
+| `wait` | 全部题目解完后继续轮询，等新题或人工停止 | 直播比赛、平台可能继续上新题 |
+| `exit` | 没有未解题且没有活动 swarm 时立即退出 | 比赛结束后做收尾，或批处理跑一遍就结束 |
+| `idle` | 进入空闲观察期，持续空闲达到阈值后退出 | 想再等等新题，但不想无限挂着 |
 
-三个贴近当前项目真实用法的示例：
+`idle` 模式必须配合：
 
-正式打凌虚赛事，全部解出后立即退出，平台确认成功时自动释放环境，并把 writeup 落到独立目录：
+```bash
+--all-solved-policy idle --all-solved-idle-seconds 600
+```
+
+### `--writeup-mode`
+
+| 取值 | 何时生成 | 适合场景 |
+|------|----------|----------|
+| `off` | 不生成 | 只关心比赛过程 |
+| `confirmed` | 平台确认提交成功后生成 | 正式赛后归档 |
+| `solved` | 本地 solver 成功时就生成 | Dry-run、回归测试、先沉淀题解草稿 |
+
+`--writeup-dir` 是根目录，不是最终目录。实际路径会自动加一层平台和赛事，例如：
+
+```text
+writeups/lingxu-event-ctf-198/echo.md
+```
+
+### 环境释放什么时候发生
+
+自动释放环境的触发条件只有这一套：
+
+1. 题目元信息里 `requires_env_start: true`
+2. 平台确认 flag 提交正确
+3. 当前不是 `--no-submit`
+
+反过来说：
+
+- 只是在本地看起来“像是解出来了”，不会提前释放环境。
+- `--no-submit` 不会自动释放环境。
+- 非环境题即使提交成功，也不会调用释放逻辑。
+
+### 三个实用组合
+
+正式打凌虚赛事，确认提交成功后生成 writeup，且全题解出后立即退出：
 
 ```bash
 uv run ctf-solve \
@@ -614,7 +539,6 @@ uv run ctf-solve \
   --coordinator none \
   --models azure/gpt-5.4 \
   --models azure/gpt-5.4-mini \
-  --max-challenges 3 \
   --all-solved-policy exit \
   --writeup-mode confirmed \
   --writeup-dir writeups \
@@ -622,7 +546,7 @@ uv run ctf-solve \
   -v
 ```
 
-跑 CTFd 整场但不想额外占用总控并发，全部题目解完后先空闲 10 分钟再退出：
+整场跑完后再空闲 10 分钟退出：
 
 ```bash
 uv run ctf-solve \
@@ -631,7 +555,6 @@ uv run ctf-solve \
   --coordinator none \
   --models azure/gpt-5.4 \
   --models azure/gpt-5.4-mini \
-  --max-challenges 3 \
   --all-solved-policy idle \
   --all-solved-idle-seconds 600 \
   --writeup-mode confirmed \
@@ -640,7 +563,7 @@ uv run ctf-solve \
   -v
 ```
 
-对凌虚赛事做整场 dry-run 回归，不提交 flag、不自动释放环境，但仍按本地解题结果生成 writeup：
+不提交 flag，但按本地成功结果生成 writeup：
 
 ```bash
 uv run ctf-solve \
@@ -658,204 +581,246 @@ uv run ctf-solve \
   -v
 ```
 
-## 常用命令速查
+## 参数详解
 
-```bash
-# 查看主命令帮助
-uv run ctf-solve --help
+### `ctf-solve` 参数
 
-# 查看消息命令帮助
-uv run ctf-msg --help
+#### 平台与认证
 
-# 查看手动导题帮助
-uv run ctf-import --help
+| 参数 | 默认值 | 说明 | 什么时候需要 |
+|------|--------|------|--------------|
+| `--platform` | `ctfd` | 题目来源平台，支持 `ctfd` 和 `lingxu-event-ctf` | 要切换到凌虚时必传 |
+| `--platform-url` | 空 | 平台根地址 | 凌虚赛事 CTF 必填 |
+| `--lingxu-event-id` | 空 | 凌虚赛事 ID | 凌虚赛事 CTF 必填 |
+| `--lingxu-cookie` | 空 | 直接传入 Cookie 原文 | 临时调试用 |
+| `--lingxu-cookie-file` | 空 | 从文件读取 Cookie | 长期使用推荐 |
+| `--ctfd-url` | `.env` 或 `http://localhost:8000` | CTFd 地址 | 使用 CTFd 时需要 |
+| `--ctfd-token` | `.env` 或空 | CTFd API Token | 使用 CTFd 时推荐必传 |
 
-# 构建沙箱镜像
-docker build -f sandbox/Dockerfile.sandbox -t ctf-sandbox .
+#### 模型、调度与执行
 
-# 跑整场（无总控，适合稳定起手）
-uv run ctf-solve --ctfd-url https://ctf.example.com --ctfd-token xxx --coordinator none --models azure/gpt-5.4 --models azure/gpt-5.4-mini --msg-port 9400 -v
+| 参数 | 默认值 | 说明 | 什么时候需要 |
+|------|--------|------|--------------|
+| `--image` | `ctf-sandbox` | Docker 沙箱镜像名 | 你换了镜像名时 |
+| `--models` | 默认模型列表 | 求解模型，可重复传入 | 想控制 solver 组合时；无本地 Codex/Claude 时建议显式传 |
+| `--challenge` | 空 | 本地单题目录 | 只调试单题时 |
+| `--challenges-dir` | `challenges` | 题目根目录 | 想改本地题目存放位置时 |
+| `--no-submit` | `false` | 只求解，不提交 flag | 做 dry-run 或本地调试时 |
+| `--coordinator` | `claude` | 顶层协调器后端：`claude`、`codex`、`none` | 想切换总控模式时 |
+| `--coordinator-model` | 后端默认值 | 覆盖顶层协调器模型 | 想手动指定总控模型时 |
+| `--max-challenges` | `10` | 同时处理的题目上限 | 想控并发时 |
 
-# 跑凌虚赛事 CTF（推荐）
-uv run ctf-solve --platform lingxu-event-ctf --platform-url https://ctf.yunyansec.com --lingxu-event-id 198 --lingxu-cookie-file .secrets/lingxu.cookie --coordinator none --models azure/gpt-5.4 --models azure/gpt-5.4-mini --max-challenges 3 --msg-port 9400 --no-submit -v
+#### 收尾、输出与交互
 
-# 跑单题
-uv run ctf-solve --challenge challenges/example-challenge --ctfd-url https://ctf.example.com --ctfd-token xxx --no-submit -v
+| 参数 | 默认值 | 说明 | 什么时候需要 |
+|------|--------|------|--------------|
+| `--all-solved-policy` | `wait` | 全部题目处理完后的策略：`wait`、`exit`、`idle` | 想自动退出时 |
+| `--all-solved-idle-seconds` | `300` | `idle` 模式的空闲超时秒数，必须大于 0 | 使用 `idle` 时 |
+| `--writeup-mode` | `off` | writeup 模式：`off`、`confirmed`、`solved` | 想落盘题解时 |
+| `--writeup-dir` | `writeups` | writeup 根目录 | 想单独存放输出时 |
+| `--msg-port` | `0` | 操作员消息端口，`0` 表示自动选择空闲端口 | 想用 `ctf-msg` 时建议固定 |
+| `-v`, `--verbose` | `false` | 输出详细日志 | 排查问题时建议打开 |
 
-# 手动导题
-uv run ctf-import --name "签到题" --category misc --description "阅读附件并找出 flag。" --attachment ./downloads/task.zip --output-dir ./challenges
+### `ctf-msg` 参数
 
-# 手动拉题
-uv run python pull_challenges.py --url https://ctf.example.com --token xxx --output ./challenges
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `MESSAGE` | 无 | 发送给协调器的消息正文 |
+| `--port` | `9400` | 协调器消息端口 |
+| `--host` | `127.0.0.1` | 协调器主机地址 |
 
-# 给协调器发消息
-uv run ctf-msg --port 9400 "检查 web 题是否复用同一套会话逻辑"
+### `ctf-import` 参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--name` | 无 | 题目名称，必填 |
+| `--category` | 无 | 题目类型，必填 |
+| `--description` | 无 | 题目描述，必填 |
+| `--connection-info` | 空 | 连接信息，例如 URL 或 `nc host port` |
+| `--attachment` | 空 | 单个附件文件，可重复传入 |
+| `--attachment-dir` | 空 | 附件目录，会递归复制其中所有文件 |
+| `--output-dir` | `challenges` | 输出目录 |
+| `--value` | `0` | 题目分值 |
+| `--tag` | 空 | 标签，可重复传入 |
+| `--hint` | 空 | 提示，可重复传入 |
+
+`ctf-import` 的输入约束：
+
+- `--name`、`--category`、`--description` 不能为空。
+- `--connection-info`、`--attachment`、`--attachment-dir` 至少要提供一类。
+- 同名附件会报冲突，不会静默覆盖。
+
+## 运行时目录与输出
+
+| 路径 | 作用 |
+|------|------|
+| `challenges/` | 拉下来的题目目录，或 `ctf-import` 生成的本地题目目录 |
+| `logs/` | 每个 solver 的 JSONL trace |
+| `writeups/` | 自动生成的 writeup 根目录 |
+
+典型题目目录：
+
+```text
+challenges/example-challenge/
+├── metadata.yml
+└── distfiles/
 ```
 
-## 运行时会发生什么
+自动 writeup 的典型路径：
 
-理解这一段，对你后续二次开发非常有帮助。
-
-### 协调器模式
-
-入口在 [backend/cli.py](backend/cli.py)。
-
-当你运行：
-
-```bash
-uv run ctf-solve ...
+```text
+writeups/lingxu-event-ctf-198/echo.md
 ```
 
-且没有传 `--challenge` 时，程序会：
+solver 容器中的关键挂载点：
 
-1. 读取 `.env` 和命令行参数，构造 [Settings](backend/config.py)。
-2. 计算 `max_containers = max_challenges * len(model_specs)`，用于限制容器启动并发。
-3. 清理上一次异常退出残留的 `ctf-agent` 容器。
-4. 启动协调器事件循环 [backend/agents/coordinator_loop.py](backend/agents/coordinator_loop.py)。
-   - 如果 `--coordinator none`，这里不会再额外连接顶层 LLM，只会把事件记录到日志并自动起 swarm。
-5. 通过 [backend/platforms/](backend/platforms) 中的平台工厂创建客户端，再用 [backend/poller.py](backend/poller.py) 每 5 秒轮询一次平台。
-6. 对每道未解题调用 [backend/agents/coordinator_core.py](backend/agents/coordinator_core.py) 的 `do_spawn_swarm()`。
-7. 如果本地没有对应题目目录，就先通过对应平台客户端自动拉题；CTFd 使用 [backend/ctfd.py](backend/ctfd.py)，凌虚赛事 CTF 使用 [backend/platforms/lingxu_event_ctf.py](backend/platforms/lingxu_event_ctf.py)。
-8. 启动该题目的 `ChallengeSwarm`，让多个 solver 同时开跑。
-
-### 单题模式
-
-当你传入：
-
-```bash
-uv run ctf-solve --challenge challenges/example-challenge ...
-```
-
-程序会直接：
-
-1. 读取 `metadata.yml`
-2. 构造 `ChallengeSwarm`
-3. 并发启动每个 solver
-4. 某个 solver 成功确认 flag 后，取消其他 solver
-5. 输出结果和 cost summary
-
-### Solver 容器内部目录
-
-每个 solver 容器里会挂载：
-
-- `/challenge/metadata.yml`：题目元信息，只读
-- `/challenge/distfiles/`：题目附件，只读
-- `/challenge/workspace/`：solver 运行时工作目录，可写
+- `/challenge/metadata.yml`：只读题目元信息
+- `/challenge/distfiles/`：只读附件目录
+- `/challenge/workspace/`：临时工作目录，可写
 
 注意：
 
-- `workspace` 是临时目录，solver 停止后会被删除
-- 如果你想保留某次分析产物，需要在代码中额外做导出
+- `workspace` 是运行期目录，solver 结束后不会自动长期保留。
+- `distfiles/` 是只读挂载，solver 产物应写到 `/challenge/workspace/`。
 
-### 日志和 trace
+## 程序启动后实际会做什么
 
-每个 solver 都会把执行过程写到 `logs/trace-*.jsonl`。文件名里会带上：
+整场模式下，大致顺序如下：
 
-- 题目名
-- 模型名
-- 时间戳
+1. 读取 `.env` 和命令行参数，构造 `Settings`。
+2. 按 `模型数量 × max_challenges` 计算容器并发上限。
+3. 清理上次异常退出残留的孤儿容器。
+4. 创建平台客户端并校验访问。
+5. 启动轮询器，每 5 秒同步一次题单和已解状态。
+6. 对每道未解题自动拉题、写入本地目录、准备环境、启动 swarm。
+7. 某题解出后，记录结果并根据配置决定是否提交、释放环境、写 writeup。
+8. 根据 `--all-solved-policy` 决定继续等待还是退出。
 
-你可以直接这样看：
+单题模式下，大致顺序如下：
+
+1. 读取本地 `metadata.yml`
+2. 启动对应题目的 `ChallengeSwarm`
+3. 并发运行多个 solver
+4. 某个 solver 成功后，取消其余 solver
+5. 根据配置决定是否提交、写 writeup、释放环境
+
+## 二次开发入口
+
+| 路径 | 作用 |
+|------|------|
+| `backend/cli.py` | 三个 CLI 入口：`ctf-solve`、`ctf-msg`、`ctf-import` |
+| `backend/config.py` | 运行时配置与 `.env` 读取 |
+| `backend/models.py` | 默认模型列表和 provider 解析 |
+| `backend/agents/` | 协调器、solver、swarm 的核心逻辑 |
+| `backend/platforms/` | 平台抽象层，以及 CTFd / 凌虚适配器 |
+| `backend/challenge_import.py` | 手动导题逻辑 |
+| `backend/prompts.py` | prompt 组装与附件枚举 |
+| `backend/solve_lifecycle.py` | 提交、收尾、writeup、环境释放闭环 |
+| `backend/writeups.py` | writeup 生成逻辑 |
+| `backend/sandbox.py` | Docker 容器创建、挂载、并发控制 |
+| `pull_challenges.py` | 手动批量拉取 CTFd 题目 |
+
+如果你要继续做平台接入、收尾策略、writeup 模板或 solver 工具扩展，通常先看这几个文件就够了。
+
+## 常见问题
+
+### 1. 为什么所有题都解完了，程序还不退出？
+
+因为默认是：
 
 ```bash
-ls logs
-tail -f logs/trace-*.jsonl
+--all-solved-policy wait
 ```
 
-这对二次开发非常重要，因为你能据此判断：
+它的语义就是“继续等新题”。如果你想自动退出，用：
 
-- 模型具体调用了什么工具
-- 哪一步开始循环
-- 为什么没有交 flag
-- bump 是否起效
-- 某个模型是不是经常在同一种题上失误
+```bash
+--all-solved-policy exit
+```
 
-## 参数说明
+或者：
 
-`ctf-solve` 当前支持的核心参数如下：
+```bash
+--all-solved-policy idle --all-solved-idle-seconds 600
+```
 
-| 参数 | 作用 |
-|------|------|
-| `--ctfd-url` | 指定 CTFd 地址，覆盖 `.env` |
-| `--ctfd-token` | 指定 CTFd API Token，覆盖 `.env` |
-| `--platform` | 指定题目来源平台，支持 `ctfd` 和 `lingxu-event-ctf` |
-| `--platform-url` | 平台根地址；使用凌虚赛事 CTF 时必填 |
-| `--lingxu-event-id` | 凌虚赛事 ID；使用凌虚赛事 CTF 时必填 |
-| `--lingxu-cookie` | 直接传入凌虚 Cookie 原文 |
-| `--lingxu-cookie-file` | 从文件读取凌虚 Cookie，更适合长期使用 |
-| `--image` | 指定 Docker 沙箱镜像名，默认 `ctf-sandbox` |
-| `--models` | 指定 solver 模型，可重复传入 |
-| `--challenge` | 指定本地单题目录，启用单题模式 |
-| `--challenges-dir` | 题目保存目录，默认 `challenges` |
-| `--no-submit` | 干跑，不真的提交 flag；不会触发平台确认后的自动释放环境 |
-| `--coordinator-model` | 覆盖协调器模型 |
-| `--coordinator` | 选择协调器后端：`claude`、`codex` 或 `none` |
-| `--max-challenges` | 同时求解的题目上限 |
-| `--all-solved-policy` | 全部题目已解后的收尾策略：`wait`、`exit`、`idle` |
-| `--all-solved-idle-seconds` | 当 `--all-solved-policy idle` 时的空闲超时秒数，必须大于 `0` |
-| `--writeup-mode` | writeup 生成策略：`off`、`confirmed`、`solved` |
-| `--writeup-dir` | writeup 输出目录 |
-| `--msg-port` | 协调器消息端口；`0` 表示自动分配 |
-| `-v, --verbose` | 打开更详细日志 |
+### 2. 不装本地 Codex 或 Claude，能不能直接用？
 
-`ctf-msg` 支持：
+可以，前提是：
 
-| 参数 | 作用 |
-|------|------|
-| `MESSAGE` | 发送给协调器的消息正文 |
-| `--port` | 协调器监听端口，默认 `9400` |
-| `--host` | 协调器地址，默认 `127.0.0.1` |
+- 你的 solver 模型改成 API 型 `--models`
+- 顶层协调器改成 `--coordinator none`
 
-`ctf-import` 支持：
+示例：
 
-| 参数 | 作用 |
-|------|------|
-| `--name` | 题目名称 |
-| `--category` | 题目类型 |
-| `--description` | 题目描述 |
-| `--connection-info` | 连接信息，例如 URL 或 `nc host port` |
-| `--attachment` | 单个附件文件，可重复传入 |
-| `--attachment-dir` | 附件目录，会递归复制其中所有文件 |
-| `--output-dir` | 导入后的题目根目录，默认 `challenges` |
-| `--value` | 题目分值，默认 `0` |
-| `--tag` | 题目标签，可重复传入 |
-| `--hint` | 题目提示，可重复传入 |
+```bash
+uv run ctf-solve \
+  --ctfd-url https://ctf.example.com \
+  --ctfd-token ctfd_your_token \
+  --coordinator none \
+  --models azure/gpt-5.4 \
+  --models azure/gpt-5.4-mini
+```
 
-## 二次开发时建议
+### 3. 凌虚平台登录后没看到 `csrftoken`，正常吗？
 
-1. [backend/cli.py](backend/cli.py)
-   先弄清楚这个项目从哪里启动、有哪些运行模式。
-2. [backend/agents/coordinator_loop.py](backend/agents/coordinator_loop.py)
-   这是“整场比赛模式”的主循环。
-3. [backend/agents/coordinator_core.py](backend/agents/coordinator_core.py)
-   这里是协调器真正调用的工具逻辑。
-4. [backend/agents/swarm.py](backend/agents/swarm.py)
-   这里决定了多 solver 如何竞速、何时停、如何共享发现。
-5. [backend/agents/codex_solver.py](backend/agents/codex_solver.py) 和 [backend/agents/claude_solver.py](backend/agents/claude_solver.py)
-   这是具体 solver 的实现入口。
-6. [backend/tools/](backend/tools)
-   这里定义了 solver 可用能力，是扩展功能时最常改的区域。
-7. [backend/prompts.py](backend/prompts.py)
-   如果你想改 solver 风格、解题策略、题型偏好，先看这里。
-8. [backend/sandbox.py](backend/sandbox.py)
-   如果你要扩工具链、改挂载方式、保存分析产物、兼容不同平台，这里是重点。
+正常。当前适配器只要求 Cookie 中有有效的 `sessionid`。如果浏览器里同时有 `csrftoken`，可以一起保留；没有也不影响当前接入。
 
-## 常见注意事项
+### 4. 凌虚环境题需要我手动点击“开启环境”吗？
 
-- `--challenge` 模式需要你本地已经有 `metadata.yml`，不是只给一个题目名字就能跑。
-- 如果你想用 `ctf-msg`，最好固定 `--msg-port`，否则协调器端口是随机的。
-- `--coordinator none` 只去掉顶层总控，不会自动替你把默认 solver 模型从 `codex/...` / `claude-sdk/...` 改成 API 模型。
-- `--coordinator none` 适合不想占用总控并发、只靠 swarm 自动跑整场的场景；自动收尾、writeup 和平台确认后的环境释放仍然可用。
-- `--all-solved-policy idle` 必须配合大于 `0` 的 `--all-solved-idle-seconds`。
-- `--writeup-mode confirmed` 只有在平台确认提交成功后才会生成；`--writeup-mode solved` 则按本地解题结果生成，dry-run / `--no-submit` 也适用。
-- 自动释放环境只会发生在平台确认 flag 正确且 `requires_env_start: true` 的题目上；环境题也必须等平台确认正确后才会释放。
-- `--no-submit` 不自动释放环境。
-- 默认模型越多，同时启动的容器就越多，CPU / 内存 / Docker 压力会明显上升。
-- `distfiles` 是只读挂载，solver 生成的新文件应该写到 `/challenge/workspace/`。
-- prompt 中会把 `localhost` / `127.0.0.1` 重写为 `host.docker.internal`，便于容器访问宿主机上的题目服务。
-- 代码里带有 quota fallback 逻辑，但只有在你配置了对应 Bedrock / Azure / Zen 凭据时才真正有用。
+通常不需要。当前适配器会在需要环境的题目上自动调用平台的 `begin`、`run`、`addr` 流程，并把最终连接信息写回 `metadata.yml`。
+
+例外情况：
+
+- 平台权限过期
+- 平台接口本身异常
+- 目标赛事页面无法正常返回环境地址
+
+这时才需要你人工介入。
+
+### 5. 为什么有时会看到 `192.168.x.x` 这种地址？
+
+那通常是平台接口返回的内网地址。当前凌虚适配器会优先使用公网 `domain_addr`；如果平台只返回了内网 `ext_id`，那说明问题在平台返回值本身，不是 README 写错了。
+
+### 6. 为什么提示 `address already in use`？
+
+如果你看到类似：
+
+```text
+Could not start operator message endpoint: ... address already in use
+```
+
+说明 `--msg-port` 绑定的端口已被占用。常见原因：
+
+- 之前的 `ctf-solve` 还在运行
+- 另一个进程已经占用了同样的端口
+
+处理方式：
+
+- 结束旧进程
+- 或换一个端口，例如 `--msg-port 9301`
+
+### 7. 为什么 `ctf-msg` 发送后看起来没反应？
+
+如果当前是 `--coordinator none`，消息会被接收和记录，但没有顶层大模型去阅读和重新调度。这不是 bug，而是 `none` 模式的定义。
+
+### 8. 为什么没生成 writeup？
+
+常见原因只有这几类：
+
+- 你没有开启 `--writeup-mode`
+- 你用了 `--writeup-mode confirmed`，但当前是 `--no-submit`
+- solver 并没有真正产出成功结果
+
+如果你只是想在 dry-run 阶段沉淀题解草稿，用：
+
+```bash
+--writeup-mode solved
+```
 
 ## 致谢
 
-- [es3n1n/Eruditus](https://github.com/es3n1n/Eruditus)：
-  [pull_challenges.py](pull_challenges.py) 中的 CTFd 交互和 HTML 处理部分参考了该项目。
+- 上游项目 `ctf-agent`
+- [Veria Labs](https://verialabs.com)
+- [.;,;.](https://ctftime.org/team/222911)
+- [es3n1n/Eruditus](https://github.com/es3n1n/Eruditus)，`pull_challenges.py` 中的部分 CTFd 交互思路参考了该项目
