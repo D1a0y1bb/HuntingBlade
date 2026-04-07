@@ -13,7 +13,7 @@ import backend.agents.coordinator_loop as coordinator_loop
 import backend.agents.swarm as swarm_module
 from backend.config import Settings
 from backend.control.state import CompetitionState
-from backend.cost_tracker import CostTracker
+from backend.cost_tracker import AgentUsage, CostTracker
 from backend.ctfd import CTFdClient, SubmitResult
 from backend.deps import CoordinatorDeps
 from backend.platforms.lingxu_event_ctf import LingxuEventCTFClient
@@ -506,6 +506,92 @@ async def test_run_event_loop_refreshes_runtime_state_each_tick(
     assert result["results"] == {}
     assert len(calls) >= 2
     assert deps.runtime_state is calls[-1]
+
+
+@pytest.mark.asyncio
+async def test_run_event_loop_uses_real_snapshot_for_terminal_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    platform = FakePlatform()
+    cost_tracker = CostTracker()
+    deps = CoordinatorDeps(
+        ctfd=platform,
+        cost_tracker=cost_tracker,
+        settings=make_settings(all_solved_policy="exit"),
+        model_specs=[],
+    )
+
+    class StubSolver:
+        def __init__(self, model_spec: str) -> None:
+            self.model_spec = model_spec
+            self.agent_name = f"solver/{model_spec}"
+            self._step_count = [4]
+            self._cost_usd = 99.0
+
+    class StubSwarm:
+        def __init__(self, solvers: dict[str, StubSolver]) -> None:
+            self.cancel_event = asyncio.Event()
+            self.solvers = solvers
+
+        def kill(self) -> None:
+            self.cancel_event.set()
+
+    class DoneTask:
+        def done(self) -> bool:
+            return True
+
+    deps.results["alpha"] = {"solve_status": FLAG_FOUND}
+    deps.swarms["alpha"] = StubSwarm(
+        solvers={"azure/gpt-5.4": StubSolver("azure/gpt-5.4")}
+    )
+    deps.swarm_tasks["alpha"] = DoneTask()
+    cost_tracker.by_agent["solver/azure/gpt-5.4"] = AgentUsage(cost_usd=0.7)
+
+    class FakePoller:
+        def __init__(self, ctfd: FakePlatform, interval_s: float) -> None:
+            self.ctfd = ctfd
+            self.interval_s = interval_s
+            self.known_challenges = {"alpha"}
+            self.known_solved = {"alpha"}
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        async def get_event(self, timeout: float = 1.0) -> None:
+            return None
+
+        def drain_events(self) -> list[Any]:
+            return []
+
+    async def fake_start_msg_server(inbox: asyncio.Queue, port: int = 0) -> None:
+        return None
+
+    async def fake_auto_spawn_unsolved(_deps: CoordinatorDeps, _poller: Any) -> None:
+        return None
+
+    async def fake_turn_fn(message: str) -> None:
+        return None
+
+    monkeypatch.setattr(coordinator_loop, "CompetitionPoller", FakePoller)
+    monkeypatch.setattr(coordinator_loop, "_start_msg_server", fake_start_msg_server)
+    monkeypatch.setattr(coordinator_loop, "_auto_spawn_unsolved", fake_auto_spawn_unsolved)
+
+    result = await coordinator_loop.run_event_loop(
+        deps=deps,
+        ctfd=platform,
+        cost_tracker=deps.cost_tracker,
+        turn_fn=fake_turn_fn,
+        status_interval=9999,
+    )
+
+    assert result["results"] == {"alpha": {"solve_status": FLAG_FOUND}}
+    assert deps.runtime_state.swarms["alpha"].status == "finished"
+    assert deps.runtime_state.swarms["alpha"].running_models == []
+    assert deps.runtime_state.swarms["alpha"].step_count == 4
+    assert deps.runtime_state.swarms["alpha"].cost_usd == 0.7
 
 
 @pytest.mark.asyncio

@@ -188,6 +188,9 @@ async def run_event_loop(
                 elif evt.kind == "challenge_solved":
                     parts.append(f"SOLVED: '{evt.challenge_name}' — swarm auto-killed.")
 
+            now = asyncio.get_event_loop().time()
+            deps.runtime_state = build_runtime_state_snapshot(deps, poller, now)
+
             # Detect finished swarms
             for name, task in list(deps.swarm_tasks.items()):
                 if task.done():
@@ -234,7 +237,6 @@ async def run_event_loop(
                 await turn_fn(msg)
 
             now = asyncio.get_event_loop().time()
-            deps.runtime_state = build_runtime_state_snapshot(deps, poller, now)
             active_count = sum(1 for task in deps.swarm_tasks.values() if not task.done())
             should_exit, idle_since = _evaluate_all_solved_policy(
                 deps=deps,

@@ -51,8 +51,12 @@ class CompetitionState:
 
 
 def _solver_step_count(solver: Any) -> int:
-    step_count = getattr(solver, "_step_count", 0)
+    step_count = getattr(solver, "_step_count", None)
+    if step_count is None:
+        step_count = getattr(solver, "step_count", 0)
     if isinstance(step_count, list):
+        return int(step_count[0]) if step_count else 0
+    if isinstance(step_count, tuple):
         return int(step_count[0]) if step_count else 0
     try:
         return int(step_count)
@@ -61,12 +65,6 @@ def _solver_step_count(solver: Any) -> int:
 
 
 def _solver_cost_usd(solver: Any, deps: CoordinatorDeps) -> float:
-    cost = getattr(solver, "_cost_usd", None)
-    if cost is not None:
-        try:
-            return float(cost)
-        except (TypeError, ValueError):
-            return 0.0
     agent_name = getattr(solver, "agent_name", "")
     if agent_name:
         usage = deps.cost_tracker.by_agent.get(agent_name)
@@ -75,26 +73,82 @@ def _solver_cost_usd(solver: Any, deps: CoordinatorDeps) -> float:
     return 0.0
 
 
+def _status_from_result(record: dict[str, Any] | None) -> str | None:
+    if not record:
+        return None
+    solve_status = str(record.get("solve_status", "")).lower()
+    if solve_status in {"cancelled"}:
+        return "cancelled"
+    if solve_status in {"error", "quota_error"}:
+        return "error"
+    if solve_status in {"flag_found", "gave_up", "no_result", "skipped"}:
+        return "finished"
+    return None
+
+
 def build_runtime_state_snapshot(
     deps: CoordinatorDeps,
     poller: CompetitionPoller,
     now: float,
 ) -> CompetitionState:
-    swarms: dict[str, SwarmState] = {}
-    for name, swarm in deps.swarms.items():
-        task = deps.swarm_tasks.get(name)
-        status = "running"
-        if task and task.done():
-            status = "finished"
-        elif swarm.cancel_event.is_set():
-            status = "cancelled"
+    previous = deps.runtime_state.swarms if deps.runtime_state else {}
+    terminal_names: set[str] = {
+        name for name, swarm in previous.items() if swarm.status in {"finished", "cancelled", "error"}
+    }
+    terminal_names.update(
+        {
+            name
+            for name, record in deps.results.items()
+            if _status_from_result(record) in {"finished", "cancelled", "error"}
+        }
+    )
+    swarm_names = set(deps.swarms)
+    swarm_names.update(terminal_names)
 
-        running_models = sorted(swarm.solvers.keys())
-        step_count = 0
-        cost_usd = 0.0
-        for solver in swarm.solvers.values():
-            step_count += _solver_step_count(solver)
-            cost_usd += _solver_cost_usd(solver, deps)
+    swarms: dict[str, SwarmState] = {}
+    for name in swarm_names:
+        swarm = deps.swarms.get(name)
+        result_status = _status_from_result(deps.results.get(name))
+        prior_state = previous.get(name)
+        status = prior_state.status if prior_state else "idle"
+
+        if swarm is not None:
+            task = deps.swarm_tasks.get(name)
+            if task is not None:
+                status = result_status or ("finished" if task.done() else "running")
+            else:
+                if swarm.cancel_event.is_set():
+                    if result_status:
+                        status = result_status
+                    elif prior_state and prior_state.status in {"finished", "cancelled", "error"}:
+                        status = prior_state.status
+                    else:
+                        status = "cancelled"
+                else:
+                    status = result_status or "running"
+        else:
+            if result_status:
+                status = result_status
+            elif prior_state and prior_state.status in {"finished", "cancelled", "error"}:
+                status = prior_state.status
+            else:
+                continue
+
+        if swarm is not None:
+            step_count = 0
+            cost_usd = 0.0
+            for solver in swarm.solvers.values():
+                step_count += _solver_step_count(solver)
+                cost_usd += _solver_cost_usd(solver, deps)
+            running_models = sorted(swarm.solvers.keys()) if status == "running" else []
+        elif prior_state:
+            step_count = prior_state.step_count
+            cost_usd = prior_state.cost_usd
+            running_models = [] if status != "running" else list(prior_state.running_models)
+        else:
+            step_count = 0
+            cost_usd = 0.0
+            running_models = []
 
         swarms[name] = SwarmState(
             challenge_name=name,
