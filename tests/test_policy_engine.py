@@ -104,6 +104,43 @@ def test_policy_engine_broadcasts_matched_knowledge_once_per_swarm() -> None:
     ]
 
 
+def test_policy_engine_does_not_broadcast_knowledge_for_non_running_swarm() -> None:
+    store = KnowledgeStore()
+    store.upsert(
+        scope="category",
+        kind="exploit_pattern",
+        content="category rule: web: try phar first",
+        evidence="confirmed in prior web challenge",
+        confidence=0.8,
+        source_challenge="older-web",
+        applicability={"category": "web"},
+    )
+    engine = PolicyEngine(max_concurrent_challenges=3, bump_cooldown_seconds=60, stall_seconds=120)
+
+    for swarm_status in ("finished", "cancelled"):
+        state = CompetitionState(
+            known_challenges={"hatephp"},
+            known_solved=set(),
+            challenges={"hatephp": ChallengeState(challenge_name="hatephp", status="pending", category="web")},
+            swarms={
+                "hatephp": SwarmState(
+                    challenge_name="hatephp",
+                    status=swarm_status,
+                    running_models=[],
+                    applied_knowledge_ids=set(),
+                )
+            },
+        )
+        actions = engine.plan_tick(
+            competition=state,
+            working_memory_store=WorkingMemoryStore(),
+            knowledge_store=store,
+            now=100.0,
+        )
+
+        assert actions == []
+
+
 def test_policy_engine_does_not_spawn_when_terminal_swarm_already_exists() -> None:
     for terminal_status in ("finished", "cancelled", "error"):
         state = CompetitionState(
@@ -264,3 +301,18 @@ def test_coordinator_deps_syncs_policy_engine_concurrency_with_override() -> Non
 
     assert deps.max_concurrent_challenges == 4
     assert deps.policy_engine.max_concurrent_challenges == 4
+
+
+def test_coordinator_deps_respects_explicit_policy_engine_instance() -> None:
+    explicit_engine = PolicyEngine(max_concurrent_challenges=99, bump_cooldown_seconds=15, stall_seconds=45)
+
+    deps = CoordinatorDeps(
+        ctfd=SimpleNamespace(),
+        cost_tracker=CostTracker(),
+        settings=SimpleNamespace(),
+        max_concurrent_challenges=4,
+        policy_engine=explicit_engine,
+    )
+
+    assert deps.policy_engine is explicit_engine
+    assert deps.policy_engine.max_concurrent_challenges == 99

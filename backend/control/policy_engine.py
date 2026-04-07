@@ -39,6 +39,8 @@ class PolicyEngine:
 
         for challenge_name in sorted(competition.swarms):
             swarm = competition.swarms[challenge_name]
+            if swarm.status != "running":
+                continue
             if self._should_bump_swarm(swarm=swarm, now=now):
                 memory = working_memory_store.get(challenge_name)
                 if memory.open_hypotheses and swarm.running_models:

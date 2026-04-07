@@ -77,13 +77,3 @@ class CoordinatorDeps:
                 bump_cooldown_seconds=60,
                 stall_seconds=180,
             )
-            return
-
-        if self.policy_engine.max_concurrent_challenges == self.max_concurrent_challenges:
-            return
-
-        self.policy_engine = PolicyEngine(
-            max_concurrent_challenges=self.max_concurrent_challenges,
-            bump_cooldown_seconds=self.policy_engine.bump_cooldown_seconds,
-            stall_seconds=self.policy_engine.stall_seconds,
-        )
