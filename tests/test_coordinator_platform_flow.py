@@ -2094,6 +2094,34 @@ def test_summarize_knowledge_exposes_knowledge_ids() -> None:
     assert "Try common modulus first" in summary
 
 
+def test_refresh_strategy_states_populates_strategy_summary_for_running_challenge() -> None:
+    deps = CoordinatorDeps(
+        ctfd=FakePlatform(),
+        cost_tracker=CostTracker(),
+        settings=make_settings(),
+        model_specs=["azure/gpt-5.4"],
+    )
+    deps.runtime_state = CompetitionState(
+        challenges={
+            "echo": ChallengeState(challenge_name="echo", status="running", category="pwn")
+        },
+        swarms={
+            "echo": SwarmState(
+                challenge_name="echo",
+                status="running",
+                running_models=["azure/gpt-5.4"],
+                last_progress_at=0.0,
+            )
+        },
+    )
+    deps.working_memory_store.get("echo").open_hypotheses.append("Try format string offset 7")
+
+    coordinator_loop._refresh_strategy_states(deps, now=120.0)
+
+    assert deps.strategy_states["echo"].stage == "exploit"
+    assert "offset 7" in coordinator_loop._summarize_strategy(deps, "echo")
+
+
 @pytest.mark.asyncio
 async def test_execute_advisor_tick_ignores_repeated_broadcast_without_knowledge_id(
     monkeypatch: pytest.MonkeyPatch,

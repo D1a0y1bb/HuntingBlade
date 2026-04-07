@@ -12,6 +12,8 @@ from typing import Any
 from backend.config import Settings
 from backend.control.advisor import AdvisorContext, CoordinatorAdvisor
 from backend.control.state import build_runtime_state_snapshot
+from backend.control.strategy_reducer import reduce_strategy_state
+from backend.control.strategy_state import fallback_strategy_state
 from backend.cost_tracker import CostTracker
 from backend.deps import CoordinatorDeps
 from backend.models import DEFAULT_MODELS
@@ -227,6 +229,39 @@ def _summarize_memory(deps: CoordinatorDeps, challenge_name: str) -> str:
     return deps.working_memory_store.get(challenge_name).to_summary()
 
 
+def _refresh_strategy_states(deps: CoordinatorDeps, now: float) -> None:
+    strategy_states = {}
+    for challenge_name, challenge in deps.runtime_state.challenges.items():
+        swarm = deps.runtime_state.swarms.get(challenge_name)
+        memory = deps.working_memory_store.get(challenge_name)
+        try:
+            strategy_states[challenge_name] = reduce_strategy_state(
+                challenge=challenge,
+                swarm=swarm,
+                memory=memory,
+                result_record=deps.results.get(challenge_name),
+                now=now,
+                stall_seconds=deps.policy_engine.stall_seconds if deps.policy_engine else 180,
+                bump_cooldown_seconds=(
+                    deps.policy_engine.bump_cooldown_seconds if deps.policy_engine else 60
+                ),
+            )
+        except Exception:
+            logger.exception("Strategy reduction failed for %s", challenge_name)
+            strategy_states[challenge_name] = fallback_strategy_state(
+                challenge_name,
+                reason="strategy reducer failed",
+            )
+    deps.strategy_states = strategy_states
+
+
+def _summarize_strategy(deps: CoordinatorDeps, challenge_name: str) -> str:
+    strategy = deps.strategy_states.get(challenge_name)
+    if strategy is None:
+        return "No strategy state available."
+    return strategy.to_summary()
+
+
 def _summarize_knowledge(deps: CoordinatorDeps, challenge_name: str) -> str:
     category = _resolve_challenge_category(deps, challenge_name)
     platform_name = _resolve_challenge_platform(deps, challenge_name)
@@ -295,6 +330,7 @@ async def run_event_loop(
             poller,
             asyncio.get_event_loop().time(),
         )
+        _refresh_strategy_states(deps, asyncio.get_event_loop().time())
         initial_action_results = await _execute_policy_tick(
             deps,
             poller,
@@ -306,6 +342,7 @@ async def run_event_loop(
                 poller,
                 asyncio.get_event_loop().time(),
             )
+            _refresh_strategy_states(deps, asyncio.get_event_loop().time())
         initial_advisor_results = await _execute_advisor_tick(
             deps,
             advisor,
@@ -317,6 +354,7 @@ async def run_event_loop(
                 poller,
                 asyncio.get_event_loop().time(),
             )
+            _refresh_strategy_states(deps, asyncio.get_event_loop().time())
 
         logger.info(
             "Coordinator starting: %d models, %d challenges, %d solved",
@@ -391,6 +429,7 @@ async def run_event_loop(
                             memory=memory,
                             platform=platform_name,
                         )
+            _refresh_strategy_states(deps, now)
 
             from backend.agents.coordinator_core import retire_finished_swarms
 
@@ -443,6 +482,7 @@ async def run_event_loop(
                     poller,
                     asyncio.get_event_loop().time(),
                 )
+                _refresh_strategy_states(deps, asyncio.get_event_loop().time())
             advisor_action_results = await _execute_advisor_tick(
                 deps,
                 advisor,
@@ -454,6 +494,7 @@ async def run_event_loop(
                     poller,
                     asyncio.get_event_loop().time(),
                 )
+                _refresh_strategy_states(deps, asyncio.get_event_loop().time())
 
             if parts:
                 msg = "\n\n".join(parts)
