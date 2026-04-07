@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from backend.capabilities.specs import ChallengeProfile
-from backend.prompts import ChallengeMeta
 from backend.tools.core import IMAGE_EXTS_FOR_VISION
+
+if TYPE_CHECKING:
+    from backend.prompts import ChallengeMeta
 
 
 def build_challenge_profile(meta: ChallengeMeta, distfile_names: list[str]) -> ChallengeProfile:

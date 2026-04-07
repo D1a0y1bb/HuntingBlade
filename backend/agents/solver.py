@@ -14,6 +14,8 @@ from pydantic_ai.toolsets import FunctionToolset
 from pydantic_ai.toolsets.abstract import ToolsetTool
 from pydantic_ai.toolsets.wrapper import WrapperToolset
 
+from backend.capabilities import build_challenge_profile, resolve_capabilities, solver_runtime_profile
+from backend.capabilities.specs import ResolvedCapabilities
 from backend.cost_tracker import CostTracker
 from backend.ctfd import CTFdClient
 from backend.deps import SolverDeps
@@ -29,19 +31,6 @@ from backend.output_types import FlagFound
 from backend.prompts import ChallengeMeta, build_prompt, list_distfiles
 from backend.sandbox import DockerSandbox
 from backend.solver_base import CANCELLED, CORRECT_MARKERS, ERROR, FLAG_FOUND, GAVE_UP, SolverResult
-from backend.tools.flag import submit_flag
-from backend.tools.sandbox import (
-    bash,
-    check_findings,
-    list_files,
-    notify_coordinator,
-    read_file,
-    web_fetch,
-    webhook_create,
-    webhook_get_requests,
-    write_file,
-)
-from backend.tools.vision import view_image
 from backend.tracing import SolverTracer
 
 logger = logging.getLogger(__name__)
@@ -94,13 +83,21 @@ class TracingToolset(WrapperToolset[SolverDeps]):
         return result
 
 
-def _build_toolset(deps: SolverDeps) -> FunctionToolset[SolverDeps]:
-    """Build the raw toolset for a solver agent."""
-    tools = [bash, read_file, write_file, list_files, submit_flag, web_fetch,
-             webhook_create, webhook_get_requests, check_findings, notify_coordinator]
-    if deps.use_vision:
-        tools.append(view_image)
-    return FunctionToolset(tools=tools, max_retries=4)
+def _build_resolved_capabilities(
+    *,
+    challenge_dir: str,
+    meta: ChallengeMeta,
+    use_vision: bool,
+) -> ResolvedCapabilities:
+    distfile_names = list_distfiles(challenge_dir)
+    challenge_profile = build_challenge_profile(meta, distfile_names)
+    runtime_profile = solver_runtime_profile(use_vision=use_vision)
+    return resolve_capabilities(challenge_profile, runtime_profile)
+
+
+def _build_toolset(resolved_capabilities: ResolvedCapabilities) -> FunctionToolset[SolverDeps]:
+    """Build the raw toolset for a solver agent from resolved capabilities."""
+    return FunctionToolset(tools=list(resolved_capabilities.tool_functions), max_retries=4)
 
 
 class Solver:
@@ -164,15 +161,21 @@ class Solver:
         container_arch = arch_result.stdout.strip() or "unknown"
 
         distfile_names = list_distfiles(self.challenge_dir)
+        resolved_capabilities = _build_resolved_capabilities(
+            challenge_dir=self.challenge_dir,
+            meta=self.meta,
+            use_vision=self.use_vision,
+        )
         system_prompt = build_prompt(
             self.meta,
             distfile_names,
             container_arch=container_arch,
+            resolved_capabilities=resolved_capabilities,
         )
 
         model = resolve_model(self.model_spec, self.settings)
         model_settings = resolve_model_settings(self.model_spec)
-        raw_toolset = _build_toolset(self.deps)
+        raw_toolset = _build_toolset(resolved_capabilities)
         toolset = TracingToolset(
             wrapped=raw_toolset,
             tracer=self.tracer,
