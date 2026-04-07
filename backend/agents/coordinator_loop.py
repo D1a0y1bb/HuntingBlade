@@ -314,11 +314,11 @@ async def run_event_loop(
                             platform=platform_name,
                         )
 
-            # Detect finished swarms
-            for name, task in list(deps.swarm_tasks.items()):
-                if task.done():
-                    parts.append(f"SOLVER FINISHED: Swarm for '{name}' completed. Check results or retry.")
-                    deps.swarm_tasks.pop(name, None)
+            from backend.agents.coordinator_core import retire_finished_swarms
+
+            retired_swarms = retire_finished_swarms(deps)
+            for name in retired_swarms:
+                parts.append(f"SOLVER FINISHED: Swarm for '{name}' completed. Check results or retry.")
 
             # Drain solver-to-coordinator messages
             while True:
@@ -448,7 +448,11 @@ async def _execute_policy_tick(deps: CoordinatorDeps, poller, now: float) -> lis
     )
     action_results: list[tuple[Any, str]] = []
     for action in actions:
-        result_text = await execute_action(deps, action)
+        try:
+            result_text = await execute_action(deps, action)
+        except Exception:
+            logger.exception("Policy action failed: %r", action)
+            continue
         logger.info("Policy action executed: %r -> %s", action, result_text)
         action_results.append((action, result_text))
     return action_results

@@ -145,16 +145,43 @@ async def do_get_solve_status(deps: CoordinatorDeps) -> str:
     )
 
 
-async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
-    # Retire ALL finished swarms before checking capacity
-    finished = [
-        name for name, swarm in deps.swarms.items()
-        if swarm.cancel_event.is_set()
-        or (name in deps.swarm_tasks and deps.swarm_tasks[name].done())
-    ]
-    for name in finished:
-        del deps.swarms[name]
+def retire_finished_swarms(deps: CoordinatorDeps) -> list[str]:
+    retired_names: list[str] = []
+    for name, swarm in list(deps.swarms.items()):
+        task = deps.swarm_tasks.get(name)
+        runtime_swarm = deps.runtime_state.swarms.get(name)
+        result = deps.results.get(name, {})
+        result_status = str(result.get("solve_status", "")).lower()
+        is_terminal_result = result_status in {
+            "cancelled",
+            "error",
+            "quota_error",
+            "flag_found",
+            "gave_up",
+            "no_result",
+            "skipped",
+        }
+        is_terminal_runtime = (
+            runtime_swarm is not None
+            and runtime_swarm.status in {"finished", "cancelled", "error"}
+        )
+        if task is not None and not task.done():
+            continue
+        if not (
+            swarm.cancel_event.is_set()
+            or (task is not None and task.done())
+            or is_terminal_runtime
+            or is_terminal_result
+        ):
+            continue
+        deps.swarms.pop(name, None)
         deps.swarm_tasks.pop(name, None)
+        retired_names.append(name)
+    return retired_names
+
+
+async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
+    retire_finished_swarms(deps)
 
     active_count = len(deps.swarms)
     if active_count >= deps.max_concurrent_challenges:
@@ -340,6 +367,7 @@ async def execute_action(deps: CoordinatorDeps, action: CoordinatorAction) -> st
             knowledge_id=action.knowledge_id,
         )
     if isinstance(action, RetryChallenge):
+        retire_finished_swarms(deps)
         return await do_spawn_swarm(deps, action.challenge_name)
     if isinstance(action, MarkChallengeSkipped):
         _record_skipped_challenge(deps, action.challenge_name, action.reason)

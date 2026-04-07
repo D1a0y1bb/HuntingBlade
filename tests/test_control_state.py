@@ -297,6 +297,42 @@ def test_build_runtime_state_snapshot_preserves_policy_fields_and_challenge_meta
     assert snapshot.swarms["alpha"].applied_knowledge_ids == {"k-1"}
 
 
+def test_build_runtime_state_snapshot_does_not_keep_challenge_running_after_swarm_finished() -> None:
+    class StubPlatform:
+        pass
+
+    class StubPoller:
+        def __init__(self) -> None:
+            self.known_challenges = {"alpha"}
+            self.known_solved = set()
+
+    deps = CoordinatorDeps(
+        ctfd=StubPlatform(),
+        cost_tracker=CostTracker(),
+        settings=Settings(_env_file=None),
+        model_specs=[],
+    )
+    deps.runtime_state = CompetitionState(
+        challenges={
+            "alpha": ChallengeState(
+                challenge_name="alpha",
+                status="running",
+            )
+        },
+        swarms={
+            "alpha": SwarmState(
+                challenge_name="alpha",
+                status="finished",
+            )
+        },
+    )
+
+    snapshot = build_runtime_state_snapshot(deps, StubPoller(), now=91.0)
+
+    assert snapshot.swarms["alpha"].status == "finished"
+    assert snapshot.challenges["alpha"].status == "pending"
+
+
 def test_build_runtime_state_snapshot_retains_terminal_state_without_swarm() -> None:
     class StubPlatform:
         pass

@@ -12,8 +12,8 @@ import backend.agents.coordinator_core as coordinator_core
 import backend.agents.coordinator_loop as coordinator_loop
 import backend.agents.swarm as swarm_module
 from backend.config import Settings
-from backend.control.actions import SpawnSwarm
-from backend.control.state import CompetitionState
+from backend.control.actions import RetryChallenge, SpawnSwarm
+from backend.control.state import CompetitionState, SwarmState
 from backend.cost_tracker import AgentUsage, CostTracker
 from backend.ctfd import CTFdClient, SubmitResult
 from backend.deps import CoordinatorDeps
@@ -733,6 +733,147 @@ async def test_run_event_loop_executes_policy_actions_before_llm_turn(
     )
 
     assert events[:2] == ["spawn:echo", "turn"]
+
+
+@pytest.mark.asyncio
+async def test_execute_action_retry_challenge_respawns_finished_swarm(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class RetiredSwarm:
+        def __init__(self) -> None:
+            self.cancel_event = asyncio.Event()
+            self.solvers: dict[str, Any] = {}
+
+        def kill(self) -> None:
+            self.cancel_event.set()
+
+    class StubChallengeSwarm:
+        def __init__(self, **kwargs: Any) -> None:
+            self.challenge_dir = kwargs["challenge_dir"]
+            self.meta = kwargs["meta"]
+            self.cancel_event = asyncio.Event()
+            self.solvers: dict[str, Any] = {}
+
+        async def run(self) -> None:
+            return None
+
+        def kill(self) -> None:
+            self.cancel_event.set()
+
+    async def fake_finalize_swarm_result(**kwargs: Any) -> None:
+        return None
+
+    platform = FakePlatform()
+    challenge_dir = tmp_path / "alpha"
+    challenge_dir.mkdir()
+    deps = CoordinatorDeps(
+        ctfd=platform,
+        cost_tracker=CostTracker(),
+        settings=make_settings(),
+        model_specs=["azure/gpt-5.4"],
+        challenge_dirs={"alpha": str(challenge_dir)},
+        challenge_metas={"alpha": ChallengeMeta(name="alpha", category="web")},
+    )
+    retired_swarm = RetiredSwarm()
+    deps.swarms["alpha"] = retired_swarm
+    deps.runtime_state = CompetitionState(
+        swarms={
+            "alpha": SwarmState(
+                challenge_name="alpha",
+                status="finished",
+            )
+        }
+    )
+
+    monkeypatch.setattr(swarm_module, "ChallengeSwarm", StubChallengeSwarm)
+    monkeypatch.setattr(coordinator_core, "finalize_swarm_result", fake_finalize_swarm_result)
+
+    result = await coordinator_core.execute_action(
+        deps,
+        RetryChallenge(challenge_name="alpha", reason="retry after finish"),
+    )
+
+    await asyncio.sleep(0)
+
+    assert result == "Swarm spawned for alpha with 1 models"
+    assert deps.swarms["alpha"] is not retired_swarm
+
+
+@pytest.mark.asyncio
+async def test_run_event_loop_continues_after_policy_action_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    platform = FakePlatform()
+    deps = CoordinatorDeps(
+        ctfd=platform,
+        cost_tracker=CostTracker(),
+        settings=make_settings(all_solved_policy="exit"),
+        model_specs=["azure/gpt-5.4"],
+    )
+    events: list[str] = []
+
+    class FakePolicyEngine:
+        def plan_tick(self, **_: Any) -> list[SpawnSwarm]:
+            return [
+                SpawnSwarm(challenge_name="alpha", priority=100, reason="first"),
+                SpawnSwarm(challenge_name="bravo", priority=90, reason="second"),
+            ]
+
+    class FakePoller:
+        def __init__(self, ctfd: FakePlatform, interval_s: float) -> None:
+            self.ctfd = ctfd
+            self.interval_s = interval_s
+            self.known_challenges = {"echo"}
+            self.known_solved = {"echo"}
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        async def get_event(self, timeout: float = 1.0) -> None:
+            return None
+
+        def drain_events(self) -> list[Any]:
+            return []
+
+    async def fake_start_msg_server(inbox: asyncio.Queue, port: int = 0) -> None:
+        return None
+
+    async def fake_auto_spawn_unsolved(_deps: CoordinatorDeps, _poller: Any) -> None:
+        return None
+
+    async def fake_execute_action(_deps: CoordinatorDeps, action: Any) -> str:
+        events.append(action.challenge_name)
+        if action.challenge_name == "alpha":
+            raise RuntimeError("policy boom")
+        return f"ok:{action.challenge_name}"
+
+    async def fake_turn_fn(message: str) -> None:
+        events.append("turn")
+        raise asyncio.CancelledError()
+
+    deps.policy_engine = FakePolicyEngine()
+
+    monkeypatch.setattr(coordinator_loop, "CompetitionPoller", FakePoller)
+    monkeypatch.setattr(coordinator_loop, "_start_msg_server", fake_start_msg_server)
+    monkeypatch.setattr(coordinator_loop, "_auto_spawn_unsolved", fake_auto_spawn_unsolved)
+    monkeypatch.setattr(coordinator_core, "execute_action", fake_execute_action)
+
+    with caplog.at_level("ERROR"):
+        await coordinator_loop.run_event_loop(
+            deps=deps,
+            ctfd=platform,
+            cost_tracker=deps.cost_tracker,
+            turn_fn=fake_turn_fn,
+            status_interval=9999,
+        )
+
+    assert events[:3] == ["alpha", "bravo", "turn"]
+    assert "policy boom" in caplog.text
 
 
 @pytest.mark.asyncio

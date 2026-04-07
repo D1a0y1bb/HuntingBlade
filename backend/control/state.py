@@ -113,11 +113,18 @@ def _challenge_status(
         return result_status
     if challenge_name in known_solved:
         return "solved"
-    if swarm_state is not None and swarm_state.status == "running":
-        return "running"
+    if swarm_state is not None:
+        if swarm_state.status == "running":
+            return "running"
+        if swarm_state.status == "error":
+            return "error"
+        if swarm_state.status in {"finished", "cancelled"}:
+            return "pending" if challenge_name in known_challenges else "unknown"
     if challenge_name in known_challenges:
+        if prior_state and prior_state.status == "error":
+            return "error"
         if prior_state and prior_state.status in {"pending", "running"}:
-            return prior_state.status if swarm_state is not None else "pending"
+            return "pending"
         return "pending"
     if prior_state is not None:
         return prior_state.status
