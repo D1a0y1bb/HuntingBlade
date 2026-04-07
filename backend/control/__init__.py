@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from .actions import (
-    BumpSolver,
     BroadcastKnowledge,
+    BumpSolver,
     HoldChallenge,
     MarkChallengeSkipped,
     RetryChallenge,
