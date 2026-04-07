@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -66,27 +67,32 @@ def _is_failed_submit_result(result: str) -> bool:
     if not normalized:
         return False
 
+    # Ignore user-provided flag text when classifying result status.
+    outside_quotes = re.sub(r'"[^"]*"', '""', normalized)
+
     failure_markers = (
         "incorrect",
-        "wrong",
-        "invalid",
         "rejected",
         "reject",
         "denied",
+        "wrong answer",
         "not correct",
         "bad flag",
-        "failed",
+        "invalid flag",
+        "submit failed",
+        "submission failed",
     )
-    if any(marker in normalized for marker in failure_markers):
+    if any(marker in outside_quotes for marker in failure_markers):
         return True
 
-    success_markers = (
-        "correct",
-        "accepted",
-        "success",
-        "confirmed",
-        "already solved",
-    )
-    if any(marker in normalized for marker in success_markers):
+    if (
+        re.search(r"\bcorrect\b", outside_quotes) is not None
+        or "already solved" in outside_quotes
+        or "accepted" in outside_quotes
+        or "success" in outside_quotes
+        or "confirmed" in outside_quotes
+        or "您已提交了正确的flag" in normalized
+        or "已提交了正确的flag" in normalized
+    ):
         return False
     return False

@@ -64,3 +64,4 @@ class CoordinatorDeps:
     challenge_metas: dict[str, Any] = field(default_factory=dict)
     trace_offsets: dict[str, int] = field(default_factory=dict)
     trace_pending_lines: dict[str, bytes] = field(default_factory=dict)
+    trace_file_tokens: dict[str, tuple[int, int]] = field(default_factory=dict)

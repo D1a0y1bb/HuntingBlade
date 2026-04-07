@@ -1,4 +1,4 @@
-from backend.control.working_memory import WorkingMemoryStore
+from backend.control.working_memory import WorkingMemoryStore, _is_failed_submit_result
 
 
 def test_working_memory_dedupes_repeated_failed_hypothesis() -> None:
@@ -67,3 +67,15 @@ def test_working_memory_ignores_invalid_event_shapes() -> None:
     memory = store.get("misc")
     assert memory.failed_hypotheses == ["submit_flag returned INCORRECT"]
     assert memory.last_guidance == ["Check argv parsing"]
+
+
+def test_is_failed_submit_result_ignores_failure_words_inside_successful_flag_display() -> None:
+    assert _is_failed_submit_result('CORRECT — "flag{wrong_turn}" accepted.') is False
+    assert (
+        _is_failed_submit_result(
+            'ALREADY SOLVED — "flag{invalid-but-real}" accepted. 您已提交了正确的Flag'
+        )
+        is False
+    )
+    assert _is_failed_submit_result('CORRECT — "flag{failed_once_before}" accepted.') is False
+    assert _is_failed_submit_result('INCORRECT — "flag{bad}" rejected.') is True

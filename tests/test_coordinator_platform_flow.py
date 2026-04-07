@@ -447,6 +447,80 @@ def test_load_incremental_trace_events_keeps_all_new_events_and_is_idempotent(
     assert fourth_events == []
 
 
+def test_load_incremental_trace_events_handles_pending_partial_line(tmp_path: Path) -> None:
+    trace_path = tmp_path / "trace.jsonl"
+    trace_offsets: dict[str, int] = {}
+    pending_lines: dict[str, bytes] = {}
+    trace_file_tokens: dict[str, tuple[int, int]] = {}
+
+    first_event = {"type": "bump", "insights": "complete"}
+    second_event = {"type": "bump", "insights": "partial-then-complete"}
+    trace_path.write_text(
+        json.dumps(first_event) + "\n" + json.dumps(second_event)[:-1],
+        encoding="utf-8",
+    )
+
+    first_events = coordinator_loop._load_incremental_trace_events(
+        str(trace_path),
+        trace_offsets,
+        pending_lines,
+        trace_file_tokens,
+    )
+
+    assert first_events == [first_event]
+    assert pending_lines[str(trace_path)] != b""
+
+    with trace_path.open("a", encoding="utf-8") as handle:
+        handle.write("}\n")
+
+    second_events = coordinator_loop._load_incremental_trace_events(
+        str(trace_path),
+        trace_offsets,
+        pending_lines,
+        trace_file_tokens,
+    )
+
+    assert second_events == [second_event]
+    assert str(trace_path) not in pending_lines
+
+
+def test_load_incremental_trace_events_recovers_after_trace_file_replacement(
+    tmp_path: Path,
+) -> None:
+    trace_path = tmp_path / "trace.jsonl"
+    trace_offsets: dict[str, int] = {}
+    pending_lines: dict[str, bytes] = {}
+    trace_file_tokens: dict[str, tuple[int, int]] = {}
+
+    first_event = {"type": "bump", "insights": "AAAAAA"}
+    second_event = {"type": "bump", "insights": "BBBBBB"}
+    first_line = json.dumps(first_event) + "\n"
+    second_line = json.dumps(second_event) + "\n"
+    assert len(first_line) == len(second_line)
+
+    trace_path.write_text(first_line, encoding="utf-8")
+    consumed = coordinator_loop._load_incremental_trace_events(
+        str(trace_path),
+        trace_offsets,
+        pending_lines,
+        trace_file_tokens,
+    )
+    assert consumed == [first_event]
+
+    replacement = tmp_path / "replacement.jsonl"
+    replacement.write_text(second_line, encoding="utf-8")
+    replacement.replace(trace_path)
+
+    replaced_events = coordinator_loop._load_incremental_trace_events(
+        str(trace_path),
+        trace_offsets,
+        pending_lines,
+        trace_file_tokens,
+    )
+
+    assert replaced_events == [second_event]
+
+
 @pytest.mark.asyncio
 async def test_build_deps_default_ctfd_client_supports_validate_access(
     monkeypatch: pytest.MonkeyPatch,

@@ -30,18 +30,31 @@ def _load_incremental_trace_events(
     trace_path: str,
     trace_offsets: dict[str, int],
     pending_lines: dict[str, bytes],
+    trace_file_tokens: dict[str, tuple[int, int]] | None = None,
 ) -> list[dict[str, Any]]:
     if not trace_path:
         return []
     path = Path(trace_path)
     try:
-        file_size = path.stat().st_size
+        stat_result = path.stat()
     except OSError:
         trace_offsets.pop(trace_path, None)
         pending_lines.pop(trace_path, None)
+        if trace_file_tokens is not None:
+            trace_file_tokens.pop(trace_path, None)
         return []
 
+    file_size = stat_result.st_size
+    file_token = (stat_result.st_dev, stat_result.st_ino)
+
     offset = trace_offsets.get(trace_path, 0)
+    if trace_file_tokens is not None:
+        previous_token = trace_file_tokens.get(trace_path)
+        if previous_token is not None and previous_token != file_token:
+            offset = 0
+            pending_lines.pop(trace_path, None)
+        trace_file_tokens[trace_path] = file_token
+
     if offset < 0 or offset > file_size:
         offset = 0
         pending_lines.pop(trace_path, None)
@@ -257,6 +270,7 @@ async def run_event_loop(
                         trace_path,
                         deps.trace_offsets,
                         deps.trace_pending_lines,
+                        deps.trace_file_tokens,
                     )
                     if trace_events:
                         deps.working_memory_store.apply_trace_events(challenge_name, trace_events)
