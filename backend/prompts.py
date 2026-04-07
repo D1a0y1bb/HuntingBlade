@@ -9,6 +9,7 @@ from typing import Any
 
 import yaml
 
+from backend.capabilities.specs import ResolvedCapabilities
 from backend.tools.core import IMAGE_EXTS_FOR_VISION as IMAGE_EXTS
 
 
@@ -79,15 +80,20 @@ def build_prompt(
     meta: ChallengeMeta,
     distfile_names: list[str],
     container_arch: str = "unknown",
+    resolved_capabilities: ResolvedCapabilities | None = None,
     has_named_tools: bool = True,
 ) -> str:
     """Build the system prompt.
 
-    has_named_tools: True for Pydantic AI solver (has view_image, webhook_create, etc.
-    as discrete tools). False for Claude SDK (bash-only — model should use
-    steghide/exiftool/curl instead). Codex has named dynamic tools so uses True.
+    resolved_capabilities is the new primary control surface. has_named_tools is
+    kept temporarily for compatibility until all solver call sites migrate.
     """
     conn_info = _rewrite_connection_info(meta.connection_info.strip())
+    attachment_hints = {
+        hint.path: hint.suffix
+        for hint in (resolved_capabilities.attachment_hints if resolved_capabilities else ())
+    }
+    capability_fragments = list(resolved_capabilities.prompt_fragments if resolved_capabilities else ())
 
     lines: list[str] = [
         "You are an expert CTF solver. Find the real flag for the challenge below.",
@@ -132,14 +138,16 @@ def build_prompt(
     if distfile_names:
         lines.append("## Attached Files")
         for name in distfile_names:
-            ext = Path(name).suffix.lower()
-            is_img = ext in IMAGE_EXTS
-            if is_img and has_named_tools:
-                suffix = "  <- **IMAGE: call `view_image` immediately** (fix magic bytes first if corrupt)"
-            elif is_img:
-                suffix = "  <- **IMAGE: use `exiftool`, `steghide`, `zsteg`, `strings` via bash**"
+            suffix = ""
+            if name in attachment_hints:
+                suffix = f"  <- {attachment_hints[name]}"
             else:
-                suffix = ""
+                ext = Path(name).suffix.lower()
+                is_img = ext in IMAGE_EXTS
+                if is_img and has_named_tools:
+                    suffix = "  <- **IMAGE: call `view_image` immediately** (fix magic bytes first if corrupt)"
+                elif is_img:
+                    suffix = "  <- **IMAGE: use `exiftool`, `steghide`, `zsteg`, `strings` via bash**"
             lines.append(f"- `/challenge/distfiles/{name}`{suffix}")
         lines.append("")
 
@@ -167,14 +175,19 @@ def build_prompt(
             "",
         ]
 
-    if has_named_tools:
-        image_hint = "**Images: call `view_image` FIRST, before any other analysis.**"
-        web_hint = "Web: fuzz params, check JS source, cookies, robots.txt. For XSS/SSRF: use `webhook_create`."
-        submit_hint = "**Verify every candidate with `submit_flag`** before reporting."
-    else:
-        image_hint = "**Images: use `exiftool`, `steghide`, `zsteg`, `strings`, `xxd` via bash.**"
-        web_hint = "Web: fuzz params, check JS source, cookies, robots.txt. For XSS/SSRF: use `curl` to webhook.site."
-        submit_hint = "**Verify every candidate with `submit_flag '<flag>'`** (bash command) before reporting."
+    if not capability_fragments:
+        if has_named_tools:
+            capability_fragments = [
+                "**Images: call `view_image` FIRST, before any other analysis.**",
+                "Web: fuzz params, check JS source, cookies, robots.txt. For XSS/SSRF: use `webhook_create`.",
+                "**Verify every candidate with `submit_flag`** before reporting.",
+            ]
+        else:
+            capability_fragments = [
+                "**Images: use `exiftool`, `steghide`, `zsteg`, `strings`, `xxd` via bash.**",
+                "Web: fuzz params, check JS source, cookies, robots.txt. For XSS/SSRF: use `curl` to webhook.site.",
+                "**Verify every candidate with `submit_flag '<flag>'`** (bash command) before reporting.",
+            ]
 
     lines += [
         "",
@@ -185,17 +198,17 @@ def build_prompt(
         "2. Keep using tools until you have the flag.",
         "3. **Be creative and thorough** — try the obvious path, then explore further:",
         "   - Hidden files, env vars, backup files, HTTP headers, error messages, timing, encoding tricks.",
-        f"   - {image_hint}",
-        f"   - {web_hint}",
+    ]
+    lines.extend(f"   - {fragment}" for fragment in capability_fragments)
+    lines += [
         (
             "   - Crypto: identify algorithm, weak keys, nonce reuse, padding oracles. "
             "For RSA: use `RsaCtfTool`, sage ECM, or `cado-nfs`."
         ),
         "   - Pwn: `stty raw -echo` before launching vulnerable binaries over nc.",
         '4. **Ignore placeholder flags** — `CTF{flag}`, `CTF{placeholder}` are not real flags.',
-        f"5. {submit_hint}",
-        "6. Once CORRECT: output `FLAG: <value>` on its own line.",
-        "7. Do not guess. Do not ask. Cover maximum surface area.",
+        "5. Once CORRECT: output `FLAG: <value>` on its own line.",
+        "6. Do not guess. Do not ask. Cover maximum surface area.",
     ]
 
     return "\n".join(lines)
