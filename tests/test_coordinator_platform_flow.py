@@ -12,8 +12,8 @@ import backend.agents.coordinator_core as coordinator_core
 import backend.agents.coordinator_loop as coordinator_loop
 import backend.agents.swarm as swarm_module
 from backend.config import Settings
-from backend.control.actions import RetryChallenge, SpawnSwarm
-from backend.control.state import CompetitionState, SwarmState
+from backend.control.actions import BumpSolver, RetryChallenge, SpawnSwarm
+from backend.control.state import ChallengeState, CompetitionState, SwarmState
 from backend.cost_tracker import AgentUsage, CostTracker
 from backend.ctfd import CTFdClient, SubmitResult
 from backend.deps import CoordinatorDeps
@@ -1400,11 +1400,13 @@ async def test_run_headless_coordinator_uses_shared_event_loop(
         ctfd: Any,
         cost_tracker: CostTracker,
         turn_fn,
+        advisor: Any = None,
         status_interval: int = 60,
     ) -> dict[str, Any]:
         captured["deps"] = deps
         captured["ctfd"] = ctfd
         captured["cost_tracker"] = cost_tracker
+        captured["advisor"] = advisor
         captured["status_interval"] = status_interval
         captured["turn_result"] = await turn_fn("STATUS: 0 solved")
         return {"results": {}, "total_cost_usd": 0.0, "total_tokens": 0}
@@ -1460,11 +1462,13 @@ async def test_run_azure_coordinator_uses_shared_event_loop(
         ctfd: Any,
         cost_tracker: CostTracker,
         turn_fn,
+        advisor: Any = None,
         status_interval: int = 60,
     ) -> dict[str, Any]:
         captured["deps"] = deps
         captured["ctfd"] = ctfd
         captured["cost_tracker"] = cost_tracker
+        captured["advisor"] = advisor
         captured["status_interval"] = status_interval
         captured["turn_result"] = await turn_fn("STATUS: 0 solved")
         return {"results": {}, "total_cost_usd": 0.0, "total_tokens": 0}
@@ -1503,6 +1507,8 @@ async def test_run_azure_coordinator_uses_shared_event_loop(
     assert captured["coordinator_model_spec"] == "azure/gpt-5.4"
     assert captured["started"] is True
     assert captured["stopped"] is True
+    assert captured["advisor"] is not None
+    assert captured["advisor"] is not None
 
 
 def test_normalize_azure_coordinator_model_accepts_bare_model_name() -> None:
@@ -1522,6 +1528,660 @@ def test_normalize_azure_coordinator_model_rejects_non_azure_spec() -> None:
 
     with pytest.raises(ValueError):
         _normalize_azure_coordinator_model("google/gemini-3-flash-preview")
+
+
+def test_advisor_suggestion_is_structured_and_provider_neutral() -> None:
+    from backend.control.advisor import AdvisorContext, AdvisorSuggestion
+
+    context = AdvisorContext(
+        competition_summary="1 active swarm, 2 unsolved challenges",
+        challenge_name="rsa",
+        memory_summary="Open hypothesis: common modulus",
+        knowledge_summary="category rule: try common modulus first",
+    )
+    suggestion = AdvisorSuggestion(
+        action_hint="bump_solver",
+        challenge_name="rsa",
+        model_spec="azure/gpt-5.4",
+        guidance="Try Wiener's attack first",
+        reason="private exponent likely small",
+    )
+
+    assert context.challenge_name == "rsa"
+    assert context.memory_summary == "Open hypothesis: common modulus"
+    assert suggestion.action_hint == "bump_solver"
+    assert suggestion.challenge_name == "rsa"
+    assert suggestion.model_spec == "azure/gpt-5.4"
+
+
+def test_parse_advisor_suggestions_rejects_broadcast_without_knowledge_id() -> None:
+    from backend.control.advisor import AdvisorSuggestion, parse_advisor_suggestions_json
+
+    suggestions = parse_advisor_suggestions_json(
+        json.dumps(
+            [
+                {
+                    "action_hint": "broadcast_knowledge",
+                    "challenge_name": "rsa",
+                    "message": "Share the known attack path",
+                },
+                {
+                    "action_hint": "broadcast_knowledge",
+                    "challenge_name": "rsa",
+                    "message": "Share the known attack path",
+                    "knowledge_id": "k-rsa-1",
+                },
+            ]
+        ),
+        default_challenge="rsa",
+    )
+
+    assert suggestions == [
+        AdvisorSuggestion(
+            action_hint="broadcast_knowledge",
+            challenge_name="rsa",
+            message="Share the known attack path",
+            knowledge_id="k-rsa-1",
+        )
+    ]
+
+
+def test_parse_advisor_suggestions_rejects_cross_challenge_suggestions() -> None:
+    from backend.control.advisor import AdvisorSuggestion, parse_advisor_suggestions_json
+
+    suggestions = parse_advisor_suggestions_json(
+        json.dumps(
+            [
+                {
+                    "action_hint": "bump_solver",
+                    "challenge_name": "rsa-other",
+                    "guidance": "Try Wiener's attack first",
+                    "model_spec": "azure/gpt-5.4",
+                },
+                {
+                    "action_hint": "bump_solver",
+                    "guidance": "Try common modulus first",
+                    "model_spec": "azure/gpt-5.4",
+                },
+            ]
+        ),
+        default_challenge="rsa",
+    )
+
+    assert suggestions == [
+        AdvisorSuggestion(
+            action_hint="bump_solver",
+            challenge_name="rsa",
+            guidance="Try common modulus first",
+            model_spec="azure/gpt-5.4",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_azure_advisor_returns_suggestions_without_direct_tool_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.agents.azure_coordinator import AzureCoordinatorAdvisor
+    from backend.control.advisor import AdvisorContext
+
+    async def fake_complete(self, prompt: str) -> str:
+        assert "memory_summary" in prompt
+        assert "knowledge_summary" in prompt
+        return json.dumps(
+            [
+                {
+                    "action_hint": "bump_solver",
+                    "guidance": "Try Wiener's attack first",
+                    "reason": "private exponent likely small",
+                    "model_spec": "azure/gpt-5.4",
+                },
+                {
+                    "action_hint": "broadcast_knowledge",
+                    "guidance": "Common modulus attack should be shared",
+                    "reason": "multiple RSA challenges are active",
+                },
+                {
+                    "action_hint": "broadcast_knowledge",
+                    "guidance": "Use the known RSA workflow",
+                    "knowledge_id": "k-rsa-1",
+                },
+            ]
+        )
+
+    monkeypatch.setattr(AzureCoordinatorAdvisor, "_complete", fake_complete)
+
+    advisor = AzureCoordinatorAdvisor(settings=make_settings(), model_spec="azure/gpt-5.4")
+    suggestions = await advisor.suggest(
+        AdvisorContext(
+            competition_summary="1 active swarm, 2 unsolved challenges",
+            challenge_name="rsa",
+            memory_summary="Open hypothesis: common modulus",
+            knowledge_summary="category rule: try common modulus first",
+        )
+    )
+
+    assert suggestions
+    assert all(
+        s.action_hint in {"none", "spawn_swarm", "bump_solver", "broadcast_knowledge"}
+        for s in suggestions
+    )
+    assert suggestions[0].challenge_name == "rsa"
+    assert suggestions[1].challenge_name == "rsa"
+    assert [s.knowledge_id for s in suggestions] == ["", "k-rsa-1"]
+
+
+@pytest.mark.asyncio
+async def test_azure_advisor_does_not_reuse_message_history_across_challenges(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.agents.azure_coordinator import AzureCoordinatorAdvisor
+    from backend.control.advisor import AdvisorContext
+
+    captured_histories: list[Any] = []
+
+    class FakeResult:
+        async def __aenter__(self) -> FakeResult:
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        async def get_output(self) -> str:
+            return json.dumps([{"action_hint": "none"}])
+
+    class FakeAgent:
+        def run_stream(self, prompt: str, message_history: Any = None) -> FakeResult:
+            assert "challenge_name:" in prompt
+            captured_histories.append(message_history)
+            return FakeResult()
+
+    async def fake_start(self) -> None:
+        self._agent = FakeAgent()
+
+    monkeypatch.setattr(AzureCoordinatorAdvisor, "start", fake_start)
+
+    advisor = AzureCoordinatorAdvisor(settings=make_settings(), model_spec="azure/gpt-5.4")
+    await advisor.suggest(
+        AdvisorContext(
+            competition_summary="1 active swarm",
+            challenge_name="rsa-a",
+            memory_summary="memory A",
+            knowledge_summary="knowledge A",
+        )
+    )
+    await advisor.suggest(
+        AdvisorContext(
+            competition_summary="1 active swarm",
+            challenge_name="rsa-b",
+            memory_summary="memory B",
+            knowledge_summary="knowledge B",
+        )
+    )
+
+    assert captured_histories == [None, None]
+
+
+def test_summarize_knowledge_exposes_knowledge_ids() -> None:
+    deps = CoordinatorDeps(
+        ctfd=FakePlatform(),
+        cost_tracker=CostTracker(),
+        settings=make_settings(platform="ctfd"),
+        model_specs=["azure/gpt-5.4"],
+    )
+    entry = deps.knowledge_store.upsert(
+        scope="category",
+        kind="exploit_pattern",
+        content="Try common modulus first",
+        evidence="verified elsewhere",
+        confidence=0.85,
+        source_challenge="other-rsa",
+        applicability={"category": "crypto"},
+    )
+    deps.runtime_state = CompetitionState(
+        challenges={
+            "rsa": ChallengeState(
+                challenge_name="rsa",
+                status="running",
+                category="crypto",
+            )
+        },
+        swarms={
+            "rsa": SwarmState(
+                challenge_name="rsa",
+                status="running",
+                running_models=["azure/gpt-5.4"],
+            )
+        },
+    )
+
+    summary = coordinator_loop._summarize_knowledge(deps, "rsa")
+
+    assert entry.id in summary
+    assert "knowledge_id=" in summary
+    assert "Try common modulus first" in summary
+
+
+@pytest.mark.asyncio
+async def test_execute_advisor_tick_ignores_repeated_broadcast_without_knowledge_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.control.advisor import AdvisorContext, parse_advisor_suggestions_json
+
+    deps = CoordinatorDeps(
+        ctfd=FakePlatform(),
+        cost_tracker=CostTracker(),
+        settings=make_settings(),
+        model_specs=["azure/gpt-5.4"],
+        no_submit=True,
+    )
+    deps.runtime_state = CompetitionState(
+        known_challenges={"rsa"},
+        challenges={
+            "rsa": ChallengeState(
+                challenge_name="rsa",
+                status="running",
+                category="crypto",
+            )
+        },
+        swarms={
+            "rsa": SwarmState(
+                challenge_name="rsa",
+                status="running",
+                running_models=["azure/gpt-5.4"],
+                last_progress_at=0.0,
+                last_bump_at=0.0,
+            )
+        },
+    )
+
+    executed_actions: list[Any] = []
+
+    class FakeAdvisor:
+        async def suggest(self, context: AdvisorContext) -> list[Any]:
+            return parse_advisor_suggestions_json(
+                json.dumps(
+                    [
+                        {
+                            "action_hint": "broadcast_knowledge",
+                            "challenge_name": context.challenge_name,
+                            "message": "Share the known RSA workflow",
+                        }
+                    ]
+                ),
+                default_challenge=context.challenge_name,
+            )
+
+    async def fake_execute_action(_deps: CoordinatorDeps, action: Any) -> str:
+        executed_actions.append(action)
+        return "ok"
+
+    monkeypatch.setattr(coordinator_core, "execute_action", fake_execute_action)
+
+    first_results = await coordinator_loop._execute_advisor_tick(
+        deps,
+        FakeAdvisor(),
+        now=100.0,
+    )
+    second_results = await coordinator_loop._execute_advisor_tick(
+        deps,
+        FakeAdvisor(),
+        now=160.0,
+    )
+
+    assert first_results == []
+    assert second_results == []
+    assert executed_actions == []
+
+
+@pytest.mark.asyncio
+async def test_execute_advisor_tick_dedupes_duplicate_broadcast_knowledge_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.control.advisor import AdvisorContext, AdvisorSuggestion
+
+    deps = CoordinatorDeps(
+        ctfd=FakePlatform(),
+        cost_tracker=CostTracker(),
+        settings=make_settings(),
+        model_specs=["azure/gpt-5.4"],
+        no_submit=True,
+    )
+    deps.runtime_state = CompetitionState(
+        known_challenges={"rsa"},
+        challenges={
+            "rsa": ChallengeState(
+                challenge_name="rsa",
+                status="running",
+                category="crypto",
+            )
+        },
+        swarms={
+            "rsa": SwarmState(
+                challenge_name="rsa",
+                status="running",
+                running_models=["azure/gpt-5.4"],
+                last_progress_at=0.0,
+                last_bump_at=0.0,
+            )
+        },
+    )
+
+    executed_actions: list[Any] = []
+
+    class FakeAdvisor:
+        async def suggest(self, context: AdvisorContext) -> list[AdvisorSuggestion]:
+            return [
+                AdvisorSuggestion(
+                    action_hint="broadcast_knowledge",
+                    challenge_name=context.challenge_name,
+                    message="Use the known RSA workflow",
+                    knowledge_id="k-rsa-1",
+                ),
+                AdvisorSuggestion(
+                    action_hint="broadcast_knowledge",
+                    challenge_name=context.challenge_name,
+                    message="Use the known RSA workflow",
+                    knowledge_id="k-rsa-1",
+                ),
+            ]
+
+    async def fake_execute_action(_deps: CoordinatorDeps, action: Any) -> str:
+        executed_actions.append(action)
+        return "ok"
+
+    monkeypatch.setattr(coordinator_core, "execute_action", fake_execute_action)
+
+    results = await coordinator_loop._execute_advisor_tick(
+        deps,
+        FakeAdvisor(),
+        now=100.0,
+    )
+
+    assert len(results) == 1
+    assert len(executed_actions) == 1
+    assert executed_actions[0].knowledge_id == "k-rsa-1"
+
+
+@pytest.mark.asyncio
+async def test_codex_advisor_uses_fresh_thread_per_challenge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.agents.codex_coordinator import CodexCoordinatorAdvisor
+    from backend.control.advisor import AdvisorContext
+
+    created_threads: list[str] = []
+    turn_calls: list[tuple[str, str]] = []
+
+    async def fake_start(self) -> None:
+        self._proc = object()
+
+    async def fake_start_thread(self) -> str:
+        thread_id = f"thread-{len(created_threads) + 1}"
+        created_threads.append(thread_id)
+        return thread_id
+
+    async def fake_run_turn(self, *, thread_id: str, prompt: str) -> str:
+        turn_calls.append((thread_id, prompt))
+        return json.dumps([{"action_hint": "none"}])
+
+    monkeypatch.setattr(CodexCoordinatorAdvisor, "start", fake_start)
+    monkeypatch.setattr(CodexCoordinatorAdvisor, "_start_thread", fake_start_thread)
+    monkeypatch.setattr(CodexCoordinatorAdvisor, "_run_turn", fake_run_turn)
+
+    advisor = CodexCoordinatorAdvisor(model="gpt-5.4")
+    await advisor.suggest(
+        AdvisorContext(
+            competition_summary="1 active swarm",
+            challenge_name="rsa-a",
+            memory_summary="memory A",
+            knowledge_summary="knowledge A",
+        )
+    )
+    await advisor.suggest(
+        AdvisorContext(
+            competition_summary="1 active swarm",
+            challenge_name="rsa-b",
+            memory_summary="memory B",
+            knowledge_summary="knowledge B",
+        )
+    )
+
+    assert created_threads == ["thread-1", "thread-2"]
+    assert [thread_id for thread_id, _prompt in turn_calls] == ["thread-1", "thread-2"]
+    assert "rsa-a" in turn_calls[0][1]
+    assert "rsa-b" in turn_calls[1][1]
+
+
+@pytest.mark.asyncio
+async def test_run_codex_coordinator_stops_started_coordinator_when_advisor_start_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.agents.codex_coordinator import run_codex_coordinator
+
+    events: list[str] = []
+
+    def fake_build_deps(
+        settings: Settings,
+        model_specs: list[str] | None = None,
+        challenges_root: str = "challenges",
+        no_submit: bool = False,
+    ) -> tuple[Any, CostTracker, CoordinatorDeps]:
+        deps = CoordinatorDeps(
+            ctfd=FakePlatform(),
+            cost_tracker=CostTracker(),
+            settings=settings,
+            model_specs=model_specs or [],
+            challenges_root=challenges_root,
+            no_submit=no_submit,
+        )
+        return deps.ctfd, deps.cost_tracker, deps
+
+    async def fake_run_event_loop(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        events.append("run_event_loop")
+        return {"results": {}, "total_cost_usd": 0.0, "total_tokens": 0}
+
+    class FakeCoordinator:
+        def __init__(self, deps: CoordinatorDeps, model: str = "gpt-5.4") -> None:
+            self.model = model
+
+        async def start(self) -> None:
+            events.append("coordinator.start")
+
+        async def turn(self, message: str) -> None:
+            events.append(f"coordinator.turn:{message}")
+
+        async def stop(self) -> None:
+            events.append("coordinator.stop")
+
+    class FakeAdvisor:
+        def __init__(self, model: str = "gpt-5.4") -> None:
+            self.model = model
+
+        async def start(self) -> None:
+            events.append("advisor.start")
+            raise RuntimeError("advisor startup failed")
+
+        async def stop(self) -> None:
+            events.append("advisor.stop")
+
+    monkeypatch.setattr("backend.agents.codex_coordinator.build_deps", fake_build_deps)
+    monkeypatch.setattr("backend.agents.codex_coordinator.run_event_loop", fake_run_event_loop)
+    monkeypatch.setattr("backend.agents.codex_coordinator.CodexCoordinator", FakeCoordinator)
+    monkeypatch.setattr("backend.agents.codex_coordinator.CodexCoordinatorAdvisor", FakeAdvisor)
+
+    with pytest.raises(RuntimeError, match="advisor startup failed"):
+        await run_codex_coordinator(
+            settings=make_settings(),
+            model_specs=["codex/gpt-5.4"],
+            challenges_root="challenges",
+            no_submit=True,
+            coordinator_model="gpt-5.4",
+            msg_port=9702,
+        )
+
+    assert events == [
+        "coordinator.start",
+        "advisor.start",
+        "coordinator.stop",
+        "advisor.stop",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_event_loop_applies_advisor_suggestions_via_policy_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.control.advisor import AdvisorContext, AdvisorSuggestion
+
+    platform = FakePlatform()
+    deps = CoordinatorDeps(
+        ctfd=platform,
+        cost_tracker=CostTracker(),
+        settings=make_settings(all_solved_policy="exit"),
+        model_specs=["azure/gpt-5.4"],
+        no_submit=True,
+    )
+    captured_contexts: list[AdvisorContext] = []
+    executed_actions: list[Any] = []
+
+    deps.working_memory_store.get("rsa").open_hypotheses.append("Try common modulus attack")
+    entry = deps.knowledge_store.upsert(
+        scope="category",
+        kind="exploit_pattern",
+        content="Try common modulus first",
+        evidence="verified elsewhere",
+        confidence=0.85,
+        source_challenge="other-rsa",
+        applicability={"category": "crypto"},
+    )
+    policy_calls: list[list[AdvisorSuggestion]] = []
+
+    class FakeAdvisor:
+        async def suggest(self, context: AdvisorContext) -> list[AdvisorSuggestion]:
+            captured_contexts.append(context)
+            return [
+                AdvisorSuggestion(
+                    action_hint="bump_solver",
+                    challenge_name=context.challenge_name,
+                    model_spec="azure/gpt-5.4",
+                    guidance="Try common modulus attack",
+                    reason="advisor bump",
+                )
+                ]
+
+    class FakePolicyEngine:
+        def plan_tick(self, **_: Any) -> list[Any]:
+            return []
+
+        def apply_advisor_suggestions(
+            self,
+            *,
+            suggestions: list[AdvisorSuggestion],
+            competition: CompetitionState,
+            now: float,
+        ) -> list[BumpSolver]:
+            policy_calls.append(suggestions)
+            assert competition.swarms["rsa"].status == "running"
+            assert now >= 0
+            return [
+                BumpSolver(
+                    challenge_name="rsa",
+                    model_spec="azure/gpt-5.4",
+                    guidance="Try common modulus attack",
+                    reason="advisor bump",
+                )
+            ]
+
+    class FakePoller:
+        def __init__(self, ctfd: FakePlatform, interval_s: float) -> None:
+            self.ctfd = ctfd
+            self.interval_s = interval_s
+            self.known_challenges = {"rsa"}
+            self.known_solved = set()
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        async def get_event(self, timeout: float = 1.0) -> None:
+            return None
+
+        def drain_events(self) -> list[Any]:
+            return []
+
+    def fake_build_runtime_state_snapshot(
+        _deps: CoordinatorDeps, _poller: Any, now: float
+    ) -> CompetitionState:
+        return CompetitionState(
+            known_challenges={"rsa"},
+            challenges={
+                "rsa": ChallengeState(
+                    challenge_name="rsa",
+                    status="running",
+                    category="crypto",
+                )
+            },
+            swarms={
+                "rsa": SwarmState(
+                    challenge_name="rsa",
+                    status="running",
+                    running_models=["azure/gpt-5.4"],
+                    last_progress_at=0.0,
+                    last_bump_at=0.0,
+                )
+            },
+            last_poll_at=now,
+        )
+
+    async def fake_start_msg_server(inbox: asyncio.Queue, port: int = 0) -> None:
+        return None
+
+    async def fake_auto_spawn_unsolved(_deps: CoordinatorDeps, _poller: Any) -> None:
+        return None
+
+    async def fake_execute_action(_deps: CoordinatorDeps, action: Any) -> str:
+        executed_actions.append(action)
+        return "ok"
+
+    async def fake_turn_fn(message: str) -> None:
+        raise asyncio.CancelledError()
+
+    deps.policy_engine = FakePolicyEngine()
+
+    monkeypatch.setattr(coordinator_loop, "CompetitionPoller", FakePoller)
+    monkeypatch.setattr(coordinator_loop, "build_runtime_state_snapshot", fake_build_runtime_state_snapshot)
+    monkeypatch.setattr(coordinator_loop, "_start_msg_server", fake_start_msg_server)
+    monkeypatch.setattr(coordinator_loop, "_auto_spawn_unsolved", fake_auto_spawn_unsolved)
+    monkeypatch.setattr(coordinator_core, "execute_action", fake_execute_action)
+
+    await coordinator_loop.run_event_loop(
+        deps=deps,
+        ctfd=platform,
+        cost_tracker=deps.cost_tracker,
+        turn_fn=fake_turn_fn,
+        advisor=FakeAdvisor(),
+        status_interval=9999,
+    )
+
+    assert captured_contexts
+    assert captured_contexts[0].competition_summary
+    assert captured_contexts[0].challenge_name == "rsa"
+    assert "common modulus" in captured_contexts[0].memory_summary
+    assert "Reusable knowledge" in captured_contexts[0].knowledge_summary
+    assert entry.id in captured_contexts[0].knowledge_summary
+    assert policy_calls
+    assert policy_calls[0][0].action_hint == "bump_solver"
+    assert executed_actions == [
+        BumpSolver(
+            challenge_name="rsa",
+            model_spec="azure/gpt-5.4",
+            guidance="Try common modulus attack",
+            reason="advisor bump",
+        )
+    ]
 
 
 @pytest.mark.asyncio

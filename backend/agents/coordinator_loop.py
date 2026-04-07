@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.config import Settings
+from backend.control.advisor import AdvisorContext, CoordinatorAdvisor
 from backend.control.state import build_runtime_state_snapshot
 from backend.cost_tracker import CostTracker
 from backend.deps import CoordinatorDeps
@@ -199,11 +200,58 @@ def _resolve_challenge_platform(deps: CoordinatorDeps, challenge_name: str) -> s
     return str(platform_name).strip()
 
 
+def _summarize_competition_state(state) -> str:
+    solved_count = len(state.known_solved)
+    known_count = len(state.known_challenges)
+    active_swarms = state.active_swarm_count
+    unsolved_count = max(known_count - solved_count, 0)
+    return (
+        f"{active_swarms} active swarms, "
+        f"{unsolved_count} unsolved challenges, "
+        f"{solved_count} solved challenges, "
+        f"{known_count} known challenges"
+    )
+
+
+def _summarize_memory(deps: CoordinatorDeps, challenge_name: str) -> str:
+    return deps.working_memory_store.get(challenge_name).to_summary()
+
+
+def _summarize_knowledge(deps: CoordinatorDeps, challenge_name: str) -> str:
+    category = _resolve_challenge_category(deps, challenge_name)
+    platform_name = _resolve_challenge_platform(deps, challenge_name)
+    applied_ids = set()
+    swarm = deps.runtime_state.swarms.get(challenge_name)
+    if swarm is not None:
+        applied_ids = set(swarm.applied_knowledge_ids)
+    matched = deps.knowledge_store.match(
+        category=category,
+        challenge_name=challenge_name,
+        applied_ids=applied_ids,
+        platform=platform_name,
+    )
+    if not matched:
+        return "No reusable knowledge matched."
+
+    lines = ["Reusable knowledge:"]
+    for entry in matched:
+        lines.append(
+            f"- knowledge_id={entry.id}; "
+            f"scope={entry.scope}; "
+            f"kind={entry.kind}; "
+            f"source={entry.source_challenge}; "
+            f"confidence={entry.confidence:.2f}; "
+            f"content={entry.content}"
+        )
+    return "\n".join(lines)
+
+
 async def run_event_loop(
     deps: CoordinatorDeps,
     ctfd: CompetitionPlatformClient,
     cost_tracker: CostTracker,
     turn_fn: TurnFn,
+    advisor: CoordinatorAdvisor | None = None,
     status_interval: int = 60,
 ) -> dict[str, Any]:
     """Run the shared coordinator event loop.
@@ -237,6 +285,17 @@ async def run_event_loop(
             asyncio.get_event_loop().time(),
         )
         if initial_action_results:
+            deps.runtime_state = build_runtime_state_snapshot(
+                deps,
+                poller,
+                asyncio.get_event_loop().time(),
+            )
+        initial_advisor_results = await _execute_advisor_tick(
+            deps,
+            advisor,
+            asyncio.get_event_loop().time(),
+        )
+        if initial_advisor_results:
             deps.runtime_state = build_runtime_state_snapshot(
                 deps,
                 poller,
@@ -368,6 +427,17 @@ async def run_event_loop(
                     poller,
                     asyncio.get_event_loop().time(),
                 )
+            advisor_action_results = await _execute_advisor_tick(
+                deps,
+                advisor,
+                asyncio.get_event_loop().time(),
+            )
+            if advisor_action_results:
+                deps.runtime_state = build_runtime_state_snapshot(
+                    deps,
+                    poller,
+                    asyncio.get_event_loop().time(),
+                )
 
             if parts:
                 msg = "\n\n".join(parts)
@@ -464,6 +534,77 @@ async def _execute_policy_tick(deps: CoordinatorDeps, poller, now: float) -> lis
         logger.info("Policy action executed: %r -> %s", action, result_text)
         action_results.append((action, result_text))
     return action_results
+
+
+async def _execute_advisor_tick(
+    deps: CoordinatorDeps,
+    advisor: CoordinatorAdvisor | None,
+    now: float,
+) -> list[tuple[Any, str]]:
+    if advisor is None or deps.policy_engine is None:
+        return []
+
+    from backend.agents.coordinator_core import execute_action
+
+    suggestions = []
+    competition_summary = _summarize_competition_state(deps.runtime_state)
+    for challenge_name, swarm in sorted(deps.runtime_state.swarms.items()):
+        if swarm.status != "running":
+            continue
+        context = AdvisorContext(
+            competition_summary=competition_summary,
+            challenge_name=challenge_name,
+            memory_summary=_summarize_memory(deps, challenge_name),
+            knowledge_summary=_summarize_knowledge(deps, challenge_name),
+        )
+        try:
+            suggestions.extend(await advisor.suggest(context))
+        except Exception:
+            logger.exception("Advisor suggestion failed for %s", challenge_name)
+
+    suggestions = _dedupe_advisor_suggestions(suggestions)
+    if not suggestions:
+        return []
+
+    try:
+        actions = deps.policy_engine.apply_advisor_suggestions(
+            suggestions=suggestions,
+            competition=deps.runtime_state,
+            now=now,
+        )
+    except Exception:
+        logger.exception("Advisor action planning failed")
+        return []
+
+    action_results: list[tuple[Any, str]] = []
+    for action in actions:
+        try:
+            result_text = await execute_action(deps, action)
+        except Exception:
+            logger.exception("Advisor action failed: %r", action)
+            continue
+        logger.info("Advisor action executed: %r -> %s", action, result_text)
+        action_results.append((action, result_text))
+    return action_results
+
+
+def _dedupe_advisor_suggestions(suggestions: list[Any]) -> list[Any]:
+    deduped: list[Any] = []
+    seen_broadcast_keys: set[tuple[str, str]] = set()
+    for suggestion in suggestions:
+        action_hint = str(getattr(suggestion, "action_hint", "")).strip().lower()
+        if action_hint != "broadcast_knowledge":
+            deduped.append(suggestion)
+            continue
+
+        challenge_name = str(getattr(suggestion, "challenge_name", "")).strip()
+        knowledge_id = str(getattr(suggestion, "knowledge_id", "")).strip()
+        broadcast_key = (challenge_name, knowledge_id)
+        if broadcast_key in seen_broadcast_keys:
+            continue
+        seen_broadcast_keys.add(broadcast_key)
+        deduped.append(suggestion)
+    return deduped
 
 
 async def _auto_spawn_unsolved(deps: CoordinatorDeps, poller) -> None:

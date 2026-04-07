@@ -22,6 +22,13 @@ from backend.agents.coordinator_core import (
 )
 from backend.agents.coordinator_loop import build_deps, run_event_loop
 from backend.config import Settings
+from backend.control.advisor import (
+    ADVISOR_SYSTEM_PROMPT,
+    AdvisorContext,
+    AdvisorSuggestion,
+    parse_advisor_suggestions_json,
+    render_advisor_prompt,
+)
 from backend.deps import CoordinatorDeps
 from backend.models import (
     model_id_from_spec,
@@ -91,6 +98,54 @@ def _normalize_azure_coordinator_model(spec: str | None) -> str:
     if not spec.startswith("azure/"):
         raise ValueError("azure coordinator 只能使用 azure/<model> 或裸模型名")
     return spec
+
+
+def parse_advisor_suggestions(text: str, default_challenge: str) -> list[AdvisorSuggestion]:
+    return parse_advisor_suggestions_json(text, default_challenge=default_challenge)
+
+
+class AzureCoordinatorAdvisor:
+    """Azure/OpenAI-compatible advisor that emits structured suggestions only."""
+
+    def __init__(self, settings: Settings, model_spec: str) -> None:
+        self.settings = settings
+        self.model_spec = _normalize_azure_coordinator_model(model_spec)
+        self._agent: Agent[None, str] | None = None
+
+    async def start(self) -> None:
+        if self._agent is not None:
+            return
+        model = resolve_model(self.model_spec, self.settings)
+        model_settings = resolve_model_settings(self.model_spec)
+        self._agent = Agent(
+            model,
+            system_prompt=ADVISOR_SYSTEM_PROMPT,
+            model_settings=model_settings,
+        )
+
+    async def suggest(self, context: AdvisorContext) -> list[AdvisorSuggestion]:
+        text = await self._complete(render_advisor_prompt(context))
+        return parse_advisor_suggestions(text, default_challenge=context.challenge_name)
+
+    async def _complete(self, prompt: str) -> str:
+        if self._agent is None:
+            await self.start()
+        assert self._agent is not None
+
+        if provider_from_spec(self.model_spec) == "azure":
+            async with self._agent.run_stream(
+                prompt,
+            ) as result:
+                output = await result.get_output()
+                return str(output).strip()
+
+        result = await self._agent.run(
+            prompt,
+        )
+        return str(result.output).strip()
+
+    async def stop(self) -> None:
+        self._agent = None
 
 
 class AzureCoordinator:
@@ -190,12 +245,15 @@ async def run_azure_coordinator(
 
     model_spec = _normalize_azure_coordinator_model(coordinator_model)
     coordinator = AzureCoordinator(deps, settings=settings, model_spec=model_spec)
+    advisor = AzureCoordinatorAdvisor(settings=settings, model_spec=model_spec)
     await coordinator.start()
+    await advisor.start()
 
     async def turn_fn(message: str) -> None:
         await coordinator.turn(message)
 
     try:
-        return await run_event_loop(deps, ctfd, cost_tracker, turn_fn)
+        return await run_event_loop(deps, ctfd, cost_tracker, turn_fn, advisor=advisor)
     finally:
         await coordinator.stop()
+        await advisor.stop()
