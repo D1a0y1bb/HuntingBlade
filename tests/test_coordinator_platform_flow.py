@@ -4,6 +4,7 @@ import asyncio
 import json
 from collections.abc import Sequence
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -601,6 +602,122 @@ async def test_run_event_loop_validates_platform_before_starting_poller(
 
 
 @pytest.mark.asyncio
+async def test_run_event_loop_supports_event_sink_without_turn_fn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    platform = FakePlatform()
+    deps = CoordinatorDeps(
+        ctfd=platform,
+        cost_tracker=CostTracker(),
+        settings=make_settings(all_solved_policy="exit"),
+        model_specs=[],
+    )
+    sink_messages: list[str] = []
+
+    class FakePoller:
+        def __init__(self, ctfd: FakePlatform, interval_s: float) -> None:
+            self.ctfd = ctfd
+            self.interval_s = interval_s
+            self.known_challenges = {"alpha"}
+            self.known_solved = {"alpha"}
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        async def get_event(self, timeout: float = 1.0) -> None:
+            return None
+
+        def drain_events(self) -> list[Any]:
+            return []
+
+    async def fake_start_msg_server(inbox: asyncio.Queue, port: int = 0) -> None:
+        return None
+
+    async def fake_auto_spawn_unsolved(_deps: CoordinatorDeps, _poller: Any) -> None:
+        return None
+
+    async def fake_event_sink(message: str) -> None:
+        sink_messages.append(message)
+
+    monkeypatch.setattr(coordinator_loop, "CompetitionPoller", FakePoller)
+    monkeypatch.setattr(coordinator_loop, "_start_msg_server", fake_start_msg_server)
+    monkeypatch.setattr(coordinator_loop, "_auto_spawn_unsolved", fake_auto_spawn_unsolved)
+
+    result = await coordinator_loop.run_event_loop(
+        deps=deps,
+        ctfd=platform,
+        cost_tracker=deps.cost_tracker,
+        event_sink=fake_event_sink,
+        status_interval=9999,
+    )
+
+    assert result["results"] == {}
+    assert sink_messages
+    assert "CTF is LIVE." in sink_messages[0]
+
+
+@pytest.mark.asyncio
+async def test_run_event_loop_rejects_simultaneous_turn_fn_and_event_sink(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    platform = FakePlatform()
+    deps = CoordinatorDeps(
+        ctfd=platform,
+        cost_tracker=CostTracker(),
+        settings=make_settings(all_solved_policy="exit"),
+        model_specs=[],
+    )
+
+    class FakePoller:
+        def __init__(self, ctfd: FakePlatform, interval_s: float) -> None:
+            self.ctfd = ctfd
+            self.interval_s = interval_s
+            self.known_challenges = {"alpha"}
+            self.known_solved = {"alpha"}
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        async def get_event(self, timeout: float = 1.0) -> None:
+            return None
+
+        def drain_events(self) -> list[Any]:
+            return []
+
+    async def fake_start_msg_server(inbox: asyncio.Queue, port: int = 0) -> None:
+        return None
+
+    async def fake_auto_spawn_unsolved(_deps: CoordinatorDeps, _poller: Any) -> None:
+        return None
+
+    async def fake_turn_fn(message: str) -> None:
+        return None
+
+    async def fake_event_sink(message: str) -> None:
+        return None
+
+    monkeypatch.setattr(coordinator_loop, "CompetitionPoller", FakePoller)
+    monkeypatch.setattr(coordinator_loop, "_start_msg_server", fake_start_msg_server)
+    monkeypatch.setattr(coordinator_loop, "_auto_spawn_unsolved", fake_auto_spawn_unsolved)
+
+    with pytest.raises(ValueError, match="turn_fn.*event_sink"):
+        await coordinator_loop.run_event_loop(
+            deps=deps,
+            ctfd=platform,
+            cost_tracker=deps.cost_tracker,
+            turn_fn=fake_turn_fn,
+            event_sink=fake_event_sink,
+            status_interval=9999,
+        )
+
+
+@pytest.mark.asyncio
 async def test_run_event_loop_refreshes_runtime_state_each_tick(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -733,6 +850,114 @@ async def test_run_event_loop_executes_policy_actions_before_llm_turn(
     )
 
     assert events[:2] == ["spawn:echo", "turn"]
+
+
+@pytest.mark.asyncio
+async def test_run_event_loop_reads_trace_and_auto_bumps_from_open_hypothesis(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    trace_path = tmp_path / "solver-trace.jsonl"
+    trace_path.write_text(
+        json.dumps(
+            {
+                "type": "tool_result",
+                "tool": "bash",
+                "result": "candidate finding: possible SQLi on id parameter",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class FakeSwarm:
+        def __init__(self) -> None:
+            self.cancel_event = asyncio.Event()
+            self.solvers = {
+                "azure/gpt-5.4": SimpleNamespace(tracer=SimpleNamespace(path=str(trace_path)))
+            }
+
+        def kill(self) -> None:
+            self.cancel_event.set()
+
+    platform = FakePlatform()
+    deps = CoordinatorDeps(
+        ctfd=platform,
+        cost_tracker=CostTracker(),
+        settings=make_settings(all_solved_policy="exit"),
+        model_specs=["azure/gpt-5.4"],
+    )
+    deps.swarms["echo"] = FakeSwarm()
+    executed_actions: list[Any] = []
+
+    class FakePoller:
+        def __init__(self, ctfd: FakePlatform, interval_s: float) -> None:
+            self.ctfd = ctfd
+            self.interval_s = interval_s
+            self.known_challenges = {"echo"}
+            self.known_solved = {"echo"}
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        async def get_event(self, timeout: float = 1.0) -> None:
+            return None
+
+        def drain_events(self) -> list[Any]:
+            return []
+
+    async def fake_start_msg_server(inbox: asyncio.Queue, port: int = 0) -> None:
+        return None
+
+    async def fake_auto_spawn_unsolved(_deps: CoordinatorDeps, _poller: Any) -> None:
+        return None
+
+    def fake_build_runtime_state_snapshot(
+        _deps: CoordinatorDeps, _poller: Any, now: float
+    ) -> CompetitionState:
+        return CompetitionState(
+            known_challenges={"echo"},
+            known_solved={"echo"},
+            challenges={"echo": ChallengeState(challenge_name="echo", status="running", category="web")},
+            swarms={
+                "echo": SwarmState(
+                    challenge_name="echo",
+                    status="running",
+                    running_models=["azure/gpt-5.4"],
+                    last_progress_at=0.0,
+                )
+            },
+            last_poll_at=now,
+        )
+
+    async def fake_execute_action(_deps: CoordinatorDeps, action: Any) -> str:
+        executed_actions.append(action)
+        return "ok"
+
+    async def fake_turn_fn(message: str) -> None:
+        return None
+
+    monkeypatch.setattr(coordinator_loop, "CompetitionPoller", FakePoller)
+    monkeypatch.setattr(coordinator_loop, "_start_msg_server", fake_start_msg_server)
+    monkeypatch.setattr(coordinator_loop, "_auto_spawn_unsolved", fake_auto_spawn_unsolved)
+    monkeypatch.setattr(coordinator_loop, "build_runtime_state_snapshot", fake_build_runtime_state_snapshot)
+    monkeypatch.setattr(coordinator_core, "execute_action", fake_execute_action)
+
+    await coordinator_loop.run_event_loop(
+        deps=deps,
+        ctfd=platform,
+        cost_tracker=deps.cost_tracker,
+        turn_fn=fake_turn_fn,
+        status_interval=9999,
+    )
+
+    bump_actions = [action for action in executed_actions if isinstance(action, BumpSolver)]
+    assert len(bump_actions) == 1
+    assert bump_actions[0].challenge_name == "echo"
+    assert bump_actions[0].guidance == "Retry with open hypothesis: candidate finding: possible SQLi on id parameter"
 
 
 @pytest.mark.asyncio
@@ -1368,6 +1593,75 @@ async def test_run_event_loop_flushes_last_solved_message_before_exit(
 
 
 @pytest.mark.asyncio
+async def test_run_event_loop_event_sink_receives_initial_and_dynamic_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    platform = FakePlatform()
+    deps = CoordinatorDeps(
+        ctfd=platform,
+        cost_tracker=CostTracker(),
+        settings=make_settings(all_solved_policy="exit"),
+        model_specs=[],
+    )
+    sink_messages: list[str] = []
+
+    class Event:
+        def __init__(self, kind: str, challenge_name: str) -> None:
+            self.kind = kind
+            self.challenge_name = challenge_name
+
+    class FakePoller:
+        def __init__(self, ctfd: FakePlatform, interval_s: float) -> None:
+            assert interval_s == 5.0
+            self.ctfd = ctfd
+            self.known_challenges = {"echo"}
+            self.known_solved: set[str] = set()
+            self._delivered = False
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        async def get_event(self, timeout: float = 1.0) -> Any:
+            if self._delivered:
+                return None
+            self._delivered = True
+            self.known_solved = {"echo"}
+            return Event("challenge_solved", "echo")
+
+        def drain_events(self) -> list[Any]:
+            return []
+
+    async def fake_start_msg_server(inbox: asyncio.Queue, port: int = 0) -> None:
+        return None
+
+    async def fake_auto_spawn_unsolved(_deps: CoordinatorDeps, _poller: Any) -> None:
+        return None
+
+    async def fake_event_sink(message: str) -> None:
+        sink_messages.append(message)
+
+    monkeypatch.setattr(coordinator_loop, "CompetitionPoller", FakePoller)
+    monkeypatch.setattr(coordinator_loop, "_start_msg_server", fake_start_msg_server)
+    monkeypatch.setattr(coordinator_loop, "_auto_spawn_unsolved", fake_auto_spawn_unsolved)
+
+    result = await coordinator_loop.run_event_loop(
+        deps=deps,
+        ctfd=platform,
+        cost_tracker=deps.cost_tracker,
+        event_sink=fake_event_sink,
+        status_interval=9999,
+    )
+
+    assert result["results"] == {}
+    assert len(sink_messages) == 2
+    assert "Fetch challenges and spawn swarms for all unsolved." in sink_messages[0]
+    assert "SOLVED: 'echo' — swarm auto-killed." in sink_messages[1]
+
+
+@pytest.mark.asyncio
 async def test_run_headless_coordinator_uses_shared_event_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1399,7 +1693,8 @@ async def test_run_headless_coordinator_uses_shared_event_loop(
         deps: CoordinatorDeps,
         ctfd: Any,
         cost_tracker: CostTracker,
-        turn_fn,
+        turn_fn=None,
+        event_sink=None,
         advisor: Any = None,
         status_interval: int = 60,
     ) -> dict[str, Any]:
@@ -1408,7 +1703,8 @@ async def test_run_headless_coordinator_uses_shared_event_loop(
         captured["cost_tracker"] = cost_tracker
         captured["advisor"] = advisor
         captured["status_interval"] = status_interval
-        captured["turn_result"] = await turn_fn("STATUS: 0 solved")
+        captured["turn_fn"] = turn_fn
+        captured["event_result"] = await event_sink("STATUS: 0 solved")
         return {"results": {}, "total_cost_usd": 0.0, "total_tokens": 0}
 
     monkeypatch.setattr("backend.agents.headless_coordinator.build_deps", fake_build_deps)
@@ -1426,7 +1722,8 @@ async def test_run_headless_coordinator_uses_shared_event_loop(
     assert result["results"] == {}
     assert captured["deps"].msg_port == 9700
     assert captured["ctfd"] is platform
-    assert captured["turn_result"] is None
+    assert captured["turn_fn"] is None
+    assert captured["event_result"] is None
 
 
 @pytest.mark.asyncio
@@ -1461,7 +1758,8 @@ async def test_run_azure_coordinator_uses_shared_event_loop(
         deps: CoordinatorDeps,
         ctfd: Any,
         cost_tracker: CostTracker,
-        turn_fn,
+        turn_fn=None,
+        event_sink=None,
         advisor: Any = None,
         status_interval: int = 60,
     ) -> dict[str, Any]:
@@ -1470,25 +1768,24 @@ async def test_run_azure_coordinator_uses_shared_event_loop(
         captured["cost_tracker"] = cost_tracker
         captured["advisor"] = advisor
         captured["status_interval"] = status_interval
-        captured["turn_result"] = await turn_fn("STATUS: 0 solved")
+        captured["turn_fn"] = turn_fn
+        captured["event_result"] = await event_sink("STATUS: 0 solved")
         return {"results": {}, "total_cost_usd": 0.0, "total_tokens": 0}
 
-    class FakeCoordinator:
-        def __init__(self, deps: CoordinatorDeps, settings: Settings, model_spec: str) -> None:
-            captured["coordinator_model_spec"] = model_spec
+    class FakeAdvisor:
+        def __init__(self, settings: Settings, model_spec: str) -> None:
+            captured["advisor_model_spec"] = model_spec
+            self.settings = settings
 
         async def start(self) -> None:
-            captured["started"] = True
-
-        async def turn(self, message: str) -> None:
-            captured.setdefault("messages", []).append(message)
+            captured["advisor_started"] = True
 
         async def stop(self) -> None:
-            captured["stopped"] = True
+            captured["advisor_stopped"] = True
 
     monkeypatch.setattr("backend.agents.azure_coordinator.build_deps", fake_build_deps)
     monkeypatch.setattr("backend.agents.azure_coordinator.run_event_loop", fake_run_event_loop)
-    monkeypatch.setattr("backend.agents.azure_coordinator.AzureCoordinator", FakeCoordinator)
+    monkeypatch.setattr("backend.agents.azure_coordinator.AzureCoordinatorAdvisor", FakeAdvisor)
 
     result = await run_azure_coordinator(
         settings=make_settings(platform="lingxu-event-ctf"),
@@ -1503,11 +1800,11 @@ async def test_run_azure_coordinator_uses_shared_event_loop(
     assert result["results"] == {}
     assert captured["deps"].msg_port == 9701
     assert captured["ctfd"] is platform
-    assert captured["turn_result"] is None
-    assert captured["coordinator_model_spec"] == "azure/gpt-5.4"
-    assert captured["started"] is True
-    assert captured["stopped"] is True
-    assert captured["advisor"] is not None
+    assert captured["turn_fn"] is None
+    assert captured["event_result"] is None
+    assert captured["advisor_model_spec"] == "azure/gpt-5.4"
+    assert captured["advisor_started"] is True
+    assert captured["advisor_stopped"] is True
     assert captured["advisor"] is not None
 
 
@@ -1720,6 +2017,41 @@ async def test_azure_advisor_does_not_reuse_message_history_across_challenges(
     )
 
     assert captured_histories == [None, None]
+
+
+@pytest.mark.asyncio
+async def test_azure_advisor_complete_does_not_branch_on_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.agents.azure_coordinator import AzureCoordinatorAdvisor
+
+    class FakeResult:
+        async def __aenter__(self) -> FakeResult:
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        async def get_output(self) -> str:
+            return json.dumps([{"action_hint": "none"}])
+
+    class FakeAgent:
+        def run_stream(self, prompt: str) -> FakeResult:
+            assert "challenge_name:" in prompt
+            return FakeResult()
+
+        async def run(self, prompt: str) -> Any:
+            raise AssertionError("run() fallback should be unreachable for azure coordinator advisor")
+
+    async def fake_start(self) -> None:
+        self._agent = FakeAgent()
+
+    monkeypatch.setattr(AzureCoordinatorAdvisor, "start", fake_start)
+
+    advisor = AzureCoordinatorAdvisor(settings=make_settings(), model_spec="azure/gpt-5.4")
+    output = await advisor._complete("challenge_name: rsa")
+
+    assert output == json.dumps([{"action_hint": "none"}])
 
 
 def test_summarize_knowledge_exposes_knowledge_ids() -> None:
@@ -1954,7 +2286,7 @@ async def test_codex_advisor_uses_fresh_thread_per_challenge(
 
 
 @pytest.mark.asyncio
-async def test_run_codex_coordinator_stops_started_coordinator_when_advisor_start_fails(
+async def test_run_codex_coordinator_advisor_start_failure_does_not_touch_legacy_coordinator_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from backend.agents.codex_coordinator import run_codex_coordinator
@@ -1981,19 +2313,6 @@ async def test_run_codex_coordinator_stops_started_coordinator_when_advisor_star
         events.append("run_event_loop")
         return {"results": {}, "total_cost_usd": 0.0, "total_tokens": 0}
 
-    class FakeCoordinator:
-        def __init__(self, deps: CoordinatorDeps, model: str = "gpt-5.4") -> None:
-            self.model = model
-
-        async def start(self) -> None:
-            events.append("coordinator.start")
-
-        async def turn(self, message: str) -> None:
-            events.append(f"coordinator.turn:{message}")
-
-        async def stop(self) -> None:
-            events.append("coordinator.stop")
-
     class FakeAdvisor:
         def __init__(self, model: str = "gpt-5.4") -> None:
             self.model = model
@@ -2007,7 +2326,6 @@ async def test_run_codex_coordinator_stops_started_coordinator_when_advisor_star
 
     monkeypatch.setattr("backend.agents.codex_coordinator.build_deps", fake_build_deps)
     monkeypatch.setattr("backend.agents.codex_coordinator.run_event_loop", fake_run_event_loop)
-    monkeypatch.setattr("backend.agents.codex_coordinator.CodexCoordinator", FakeCoordinator)
     monkeypatch.setattr("backend.agents.codex_coordinator.CodexCoordinatorAdvisor", FakeAdvisor)
 
     with pytest.raises(RuntimeError, match="advisor startup failed"):
@@ -2021,11 +2339,162 @@ async def test_run_codex_coordinator_stops_started_coordinator_when_advisor_star
         )
 
     assert events == [
-        "coordinator.start",
         "advisor.start",
-        "coordinator.stop",
         "advisor.stop",
     ]
+
+
+@pytest.mark.asyncio
+async def test_run_codex_coordinator_uses_event_sink_and_advisor_on_success_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.agents.codex_coordinator import run_codex_coordinator
+
+    captured: dict[str, Any] = {}
+    events: list[str] = []
+
+    def fake_build_deps(
+        settings: Settings,
+        model_specs: list[str] | None = None,
+        challenges_root: str = "challenges",
+        no_submit: bool = False,
+    ) -> tuple[Any, CostTracker, CoordinatorDeps]:
+        deps = CoordinatorDeps(
+            ctfd=FakePlatform(),
+            cost_tracker=CostTracker(),
+            settings=settings,
+            model_specs=model_specs or [],
+            challenges_root=challenges_root,
+            no_submit=no_submit,
+        )
+        return deps.ctfd, deps.cost_tracker, deps
+
+    async def fake_run_event_loop(
+        deps: CoordinatorDeps,
+        ctfd: Any,
+        cost_tracker: CostTracker,
+        turn_fn=None,
+        event_sink=None,
+        advisor: Any = None,
+        status_interval: int = 60,
+    ) -> dict[str, Any]:
+        captured["deps"] = deps
+        captured["ctfd"] = ctfd
+        captured["cost_tracker"] = cost_tracker
+        captured["turn_fn"] = turn_fn
+        captured["event_sink"] = event_sink
+        captured["advisor"] = advisor
+        captured["event_result"] = await event_sink("STATUS: 0 solved")
+        events.append("run_event_loop")
+        return {"results": {}, "total_cost_usd": 0.0, "total_tokens": 0}
+
+    class FakeAdvisor:
+        def __init__(self, model: str = "gpt-5.4") -> None:
+            captured["advisor_model"] = model
+
+        async def start(self) -> None:
+            events.append("advisor.start")
+
+        async def stop(self) -> None:
+            events.append("advisor.stop")
+
+    monkeypatch.setattr("backend.agents.codex_coordinator.build_deps", fake_build_deps)
+    monkeypatch.setattr("backend.agents.codex_coordinator.run_event_loop", fake_run_event_loop)
+    monkeypatch.setattr("backend.agents.codex_coordinator.CodexCoordinatorAdvisor", FakeAdvisor)
+
+    result = await run_codex_coordinator(
+        settings=make_settings(),
+        model_specs=["codex/gpt-5.4"],
+        challenges_root="challenges",
+        no_submit=True,
+        coordinator_model="gpt-5.4",
+        msg_port=9704,
+    )
+
+    assert result["results"] == {}
+    assert captured["deps"].msg_port == 9704
+    assert captured["turn_fn"] is None
+    assert callable(captured["event_sink"])
+    assert captured["event_result"] is None
+    assert captured["advisor"] is not None
+    assert events == ["advisor.start", "run_event_loop", "advisor.stop"]
+
+
+@pytest.mark.asyncio
+async def test_run_claude_coordinator_uses_shared_event_loop_via_event_sink_and_advisor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.agents.claude_coordinator import run_claude_coordinator
+
+    captured: dict[str, Any] = {}
+    platform = FakePlatform()
+
+    def fake_build_deps(
+        settings: Settings,
+        model_specs: list[str] | None = None,
+        challenges_root: str = "challenges",
+        no_submit: bool = False,
+    ) -> tuple[Any, CostTracker, CoordinatorDeps]:
+        deps = CoordinatorDeps(
+            ctfd=platform,
+            cost_tracker=CostTracker(),
+            settings=settings,
+            model_specs=model_specs or [],
+            challenges_root=challenges_root,
+            no_submit=no_submit,
+        )
+        return deps.ctfd, deps.cost_tracker, deps
+
+    async def fake_run_event_loop(
+        deps: CoordinatorDeps,
+        ctfd: Any,
+        cost_tracker: CostTracker,
+        turn_fn=None,
+        event_sink=None,
+        advisor: Any = None,
+        status_interval: int = 60,
+    ) -> dict[str, Any]:
+        captured["deps"] = deps
+        captured["ctfd"] = ctfd
+        captured["cost_tracker"] = cost_tracker
+        captured["turn_fn"] = turn_fn
+        captured["advisor"] = advisor
+        captured["status_interval"] = status_interval
+        captured["event_result"] = await event_sink("STATUS: 0 solved")
+        return {"results": {}, "total_cost_usd": 0.0, "total_tokens": 0}
+
+    class FakeAdvisor:
+        def __init__(self, model: str) -> None:
+            captured["advisor_model"] = model
+
+        async def start(self) -> None:
+            captured["advisor_started"] = True
+
+        async def stop(self) -> None:
+            captured["advisor_stopped"] = True
+
+    monkeypatch.setattr("backend.agents.claude_coordinator.build_deps", fake_build_deps)
+    monkeypatch.setattr("backend.agents.claude_coordinator.run_event_loop", fake_run_event_loop)
+    monkeypatch.setattr("backend.agents.claude_coordinator.ClaudeCoordinatorAdvisor", FakeAdvisor)
+
+    result = await run_claude_coordinator(
+        settings=make_settings(),
+        model_specs=["claude-sdk/claude-opus-4-6/medium"],
+        challenges_root="challenges",
+        no_submit=True,
+        coordinator_model="claude-opus-4-6",
+        msg_port=9703,
+    )
+
+    assert result["results"] == {}
+    assert captured["deps"].msg_port == 9703
+    assert captured["ctfd"] is platform
+    assert captured["turn_fn"] is None
+    assert captured["event_result"] is None
+    assert captured["advisor_model"] == "claude-opus-4-6"
+    assert captured["advisor_started"] is True
+    assert captured["advisor_stopped"] is True
+    assert captured["advisor"] is not None
 
 
 @pytest.mark.asyncio
