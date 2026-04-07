@@ -4,6 +4,7 @@ from backend.control.actions import BroadcastKnowledge, BumpSolver, SpawnSwarm
 from backend.control.knowledge_store import KnowledgeStore
 from backend.control.policy_engine import PolicyEngine
 from backend.control.state import ChallengeState, CompetitionState, SwarmState
+from backend.control.strategy_state import ChallengeStrategyState
 from backend.control.working_memory import WorkingMemoryStore
 from backend.cost_tracker import CostTracker
 from backend.deps import CoordinatorDeps
@@ -102,6 +103,79 @@ def test_policy_engine_broadcasts_matched_knowledge_once_per_swarm() -> None:
             knowledge_id=entry.id,
         )
     ]
+
+
+def test_policy_engine_prefers_strategy_active_hypothesis_over_raw_memory() -> None:
+    state = CompetitionState(
+        challenges={"rsa": ChallengeState(challenge_name="rsa", status="running", category="crypto")},
+        swarms={
+            "rsa": SwarmState(
+                challenge_name="rsa",
+                status="running",
+                running_models=["azure/gpt-5.4"],
+                last_bump_at=0.0,
+                last_progress_at=0.0,
+            )
+        },
+    )
+    memories = WorkingMemoryStore()
+    memories.get("rsa").open_hypotheses.append("Try wrong path first")
+    strategies = {
+        "rsa": ChallengeStrategyState(
+            challenge_name="rsa",
+            stage="exploit",
+            active_hypothesis="Try common modulus attack",
+            goal="Try common modulus attack",
+            confidence=0.8,
+        )
+    }
+
+    engine = PolicyEngine(max_concurrent_challenges=3, bump_cooldown_seconds=30, stall_seconds=60)
+    actions = engine.plan_tick(
+        competition=state,
+        working_memory_store=memories,
+        knowledge_store=KnowledgeStore(),
+        strategy_states=strategies,
+        now=100.0,
+    )
+
+    assert actions[0].guidance == "Retry with open hypothesis: Try common modulus attack"
+
+
+def test_policy_engine_skips_bump_for_low_confidence_blocked_strategy() -> None:
+    state = CompetitionState(
+        challenges={"rsa": ChallengeState(challenge_name="rsa", status="running", category="crypto")},
+        swarms={
+            "rsa": SwarmState(
+                challenge_name="rsa",
+                status="running",
+                running_models=["azure/gpt-5.4"],
+                last_bump_at=0.0,
+                last_progress_at=0.0,
+            )
+        },
+    )
+    strategies = {
+        "rsa": ChallengeStrategyState(
+            challenge_name="rsa",
+            stage="blocked",
+            active_hypothesis="Try common modulus attack",
+            goal="Stop retrying without new evidence",
+            confidence=0.2,
+            blocked_reasons=["stalled after repeated bumps"],
+        )
+    }
+
+    engine = PolicyEngine(max_concurrent_challenges=3, bump_cooldown_seconds=30, stall_seconds=60)
+    actions = engine.plan_tick(
+        competition=state,
+        working_memory_store=WorkingMemoryStore(),
+        knowledge_store=KnowledgeStore(),
+        strategy_states=strategies,
+        now=100.0,
+    )
+
+    assert actions == []
 
 
 def test_policy_engine_does_not_broadcast_knowledge_for_non_running_swarm() -> None:

@@ -6,6 +6,7 @@ from typing import Any
 from backend.control.actions import BroadcastKnowledge, BumpSolver, SpawnSwarm
 from backend.control.knowledge_store import KnowledgeStore
 from backend.control.state import CompetitionState, SwarmState
+from backend.control.strategy_state import ChallengeStrategyState
 from backend.control.working_memory import WorkingMemoryStore
 
 PolicyAction = SpawnSwarm | BumpSolver | BroadcastKnowledge
@@ -23,9 +24,11 @@ class PolicyEngine:
         competition: CompetitionState,
         working_memory_store: WorkingMemoryStore,
         knowledge_store: KnowledgeStore,
+        strategy_states: dict[str, ChallengeStrategyState] | None = None,
         now: float,
     ) -> list[PolicyAction]:
         actions: list[PolicyAction] = []
+        strategies = strategy_states or {}
 
         spawn_target = self._next_spawn_target(competition)
         if spawn_target:
@@ -42,13 +45,20 @@ class PolicyEngine:
             if swarm.status != "running":
                 continue
             if self._should_bump_swarm(swarm=swarm, now=now):
-                memory = working_memory_store.get(challenge_name)
-                if memory.open_hypotheses and swarm.running_models:
+                strategy = strategies.get(challenge_name)
+                active_hypothesis = strategy.active_hypothesis if strategy else ""
+                if not active_hypothesis:
+                    memory = working_memory_store.get(challenge_name)
+                    if memory.open_hypotheses:
+                        active_hypothesis = memory.open_hypotheses[0]
+                if strategy and strategy.stage == "blocked" and strategy.confidence < 0.5:
+                    active_hypothesis = ""
+                if active_hypothesis and swarm.running_models:
                     actions.append(
                         BumpSolver(
                             challenge_name=challenge_name,
                             model_spec=swarm.running_models[0],
-                            guidance=f"Retry with open hypothesis: {memory.open_hypotheses[0]}",
+                            guidance=f"Retry with open hypothesis: {active_hypothesis}",
                             reason="stalled swarm with reusable hypothesis",
                         )
                     )

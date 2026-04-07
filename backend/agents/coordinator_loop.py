@@ -575,6 +575,7 @@ async def _execute_policy_tick(deps: CoordinatorDeps, poller, now: float) -> lis
             competition=deps.runtime_state,
             working_memory_store=deps.working_memory_store,
             knowledge_store=deps.knowledge_store,
+            strategy_states=deps.strategy_states,
             now=now,
         )
     except Exception:
