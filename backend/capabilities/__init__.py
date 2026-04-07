@@ -1,5 +1,5 @@
-from backend.capabilities.challenge_profile import build_challenge_profile
 from backend.capabilities.assembler import resolve_capabilities
+from backend.capabilities.challenge_profile import build_challenge_profile
 from backend.capabilities.runtime_profile import (
     claude_runtime_profile,
     codex_runtime_profile,

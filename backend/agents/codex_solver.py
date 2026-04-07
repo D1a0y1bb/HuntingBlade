@@ -20,7 +20,11 @@ import logging
 import time
 from typing import Any
 
-from backend.capabilities import build_challenge_profile, codex_runtime_profile, resolve_capabilities
+from backend.capabilities import (
+    build_challenge_profile,
+    codex_runtime_profile,
+    resolve_capabilities,
+)
 from backend.cost_tracker import CostTracker
 from backend.ctfd import CTFdClient
 from backend.loop_detect import LoopDetector

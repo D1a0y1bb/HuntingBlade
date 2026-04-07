@@ -23,7 +23,11 @@ from claude_agent_sdk import (
     TextBlock,
 )
 
-from backend.capabilities import build_challenge_profile, claude_runtime_profile, resolve_capabilities
+from backend.capabilities import (
+    build_challenge_profile,
+    claude_runtime_profile,
+    resolve_capabilities,
+)
 from backend.cost_tracker import CostTracker
 from backend.ctfd import CTFdClient
 from backend.loop_detect import LoopDetector

@@ -14,7 +14,11 @@ from pydantic_ai.toolsets import FunctionToolset
 from pydantic_ai.toolsets.abstract import ToolsetTool
 from pydantic_ai.toolsets.wrapper import WrapperToolset
 
-from backend.capabilities import build_challenge_profile, resolve_capabilities, solver_runtime_profile
+from backend.capabilities import (
+    build_challenge_profile,
+    resolve_capabilities,
+    solver_runtime_profile,
+)
 from backend.capabilities.specs import ResolvedCapabilities
 from backend.cost_tracker import CostTracker
 from backend.ctfd import CTFdClient

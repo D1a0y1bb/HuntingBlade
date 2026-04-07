@@ -81,13 +81,8 @@ def build_prompt(
     distfile_names: list[str],
     container_arch: str = "unknown",
     resolved_capabilities: ResolvedCapabilities | None = None,
-    has_named_tools: bool = True,
 ) -> str:
-    """Build the system prompt.
-
-    resolved_capabilities is the new primary control surface. has_named_tools is
-    kept temporarily for compatibility until all solver call sites migrate.
-    """
+    """Build the solver system prompt from challenge metadata and resolved capabilities."""
     conn_info = _rewrite_connection_info(meta.connection_info.strip())
     attachment_hints = {
         hint.path: hint.suffix
@@ -144,10 +139,8 @@ def build_prompt(
             else:
                 ext = Path(name).suffix.lower()
                 is_img = ext in IMAGE_EXTS
-                if is_img and has_named_tools:
+                if is_img:
                     suffix = "  <- **IMAGE: call `view_image` immediately** (fix magic bytes first if corrupt)"
-                elif is_img:
-                    suffix = "  <- **IMAGE: use `exiftool`, `steghide`, `zsteg`, `strings` via bash**"
             lines.append(f"- `/challenge/distfiles/{name}`{suffix}")
         lines.append("")
 
@@ -176,18 +169,11 @@ def build_prompt(
         ]
 
     if not capability_fragments:
-        if has_named_tools:
-            capability_fragments = [
-                "**Images: call `view_image` FIRST, before any other analysis.**",
-                "Web: fuzz params, check JS source, cookies, robots.txt. For XSS/SSRF: use `webhook_create`.",
-                "**Verify every candidate with `submit_flag`** before reporting.",
-            ]
-        else:
-            capability_fragments = [
-                "**Images: use `exiftool`, `steghide`, `zsteg`, `strings`, `xxd` via bash.**",
-                "Web: fuzz params, check JS source, cookies, robots.txt. For XSS/SSRF: use `curl` to webhook.site.",
-                "**Verify every candidate with `submit_flag '<flag>'`** (bash command) before reporting.",
-            ]
+        capability_fragments = [
+            "**Images: call `view_image` FIRST, before any other analysis.**",
+            "Web: fuzz params, check JS source, cookies, robots.txt. For XSS/SSRF: use `webhook_create`.",
+            "**Verify every candidate with `submit_flag`** before reporting.",
+        ]
 
     lines += [
         "",

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 
-class CapabilitySpec(str, Enum):
+class CapabilitySpec(StrEnum):
     SHELL_EXEC = "shell.exec"
     FILESYSTEM_READ = "filesystem.read"
     FILESYSTEM_WRITE = "filesystem.write"

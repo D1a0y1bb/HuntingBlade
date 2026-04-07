@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from backend.capabilities.specs import AttachmentHint, CapabilitySpec, ChallengeProfile, RuntimeProfile
+from backend.capabilities.specs import (
+    AttachmentHint,
+    CapabilitySpec,
+    ChallengeProfile,
+    RuntimeProfile,
+)
 from backend.tools.flag import submit_flag
 from backend.tools.sandbox import (
     bash,

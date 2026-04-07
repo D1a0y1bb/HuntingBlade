@@ -1,3 +1,4 @@
+import inspect
 from pathlib import Path
 
 from backend.capabilities import (
@@ -98,3 +99,7 @@ def test_build_prompt_uses_bash_only_submission_hint_when_named_tools_absent() -
 
     assert "submit_flag '<flag>'" in prompt
     assert "has_named_tools" not in prompt
+
+
+def test_build_prompt_signature_no_longer_exposes_has_named_tools() -> None:
+    assert "has_named_tools" not in inspect.signature(build_prompt).parameters
