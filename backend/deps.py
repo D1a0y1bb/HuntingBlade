@@ -7,6 +7,10 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from backend.control.knowledge_store import KnowledgeStore
+from backend.control.policy_engine import PolicyEngine
+from backend.control.state import CompetitionState
+from backend.control.working_memory import WorkingMemoryStore
 from backend.cost_tracker import CostTracker
 from backend.platforms.base import CompetitionPlatformClient
 from backend.sandbox import DockerSandbox
@@ -46,10 +50,14 @@ class CoordinatorDeps:
     challenges_root: str = "challenges"
     no_submit: bool = False
     max_concurrent_challenges: int = 10
+    working_memory_store: WorkingMemoryStore = field(default_factory=WorkingMemoryStore)
+    knowledge_store: KnowledgeStore = field(default_factory=KnowledgeStore)
+    policy_engine: PolicyEngine | None = None
 
     msg_port: int = 0  # 0 = auto-pick free port
 
     # Runtime state
+    runtime_state: CompetitionState = field(default_factory=CompetitionState)
     coordinator_inbox: asyncio.Queue = field(default_factory=asyncio.Queue)
     operator_inbox: asyncio.Queue = field(default_factory=asyncio.Queue)
     swarms: dict[str, Any] = field(default_factory=dict)
@@ -58,3 +66,14 @@ class CoordinatorDeps:
     released_envs: set[ReleasedEnvKey] = field(default_factory=set)
     challenge_dirs: dict[str, str] = field(default_factory=dict)
     challenge_metas: dict[str, Any] = field(default_factory=dict)
+    trace_offsets: dict[str, int] = field(default_factory=dict)
+    trace_pending_lines: dict[str, bytes] = field(default_factory=dict)
+    trace_file_tokens: dict[str, tuple[int, int]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.policy_engine is None:
+            self.policy_engine = PolicyEngine(
+                max_concurrent_challenges=self.max_concurrent_challenges,
+                bump_cooldown_seconds=60,
+                stall_seconds=180,
+            )

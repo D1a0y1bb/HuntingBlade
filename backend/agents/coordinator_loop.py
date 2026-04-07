@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from backend.config import Settings
+from backend.control.advisor import AdvisorContext, CoordinatorAdvisor
+from backend.control.state import build_runtime_state_snapshot
 from backend.cost_tracker import CostTracker
 from backend.deps import CoordinatorDeps
 from backend.models import DEFAULT_MODELS
@@ -23,6 +25,75 @@ logger = logging.getLogger(__name__)
 
 # Callable type for a coordinator turn: (message) -> None
 TurnFn = Callable[[str], Coroutine[Any, Any, None]]
+
+
+def _load_incremental_trace_events(
+    trace_path: str,
+    trace_offsets: dict[str, int],
+    pending_lines: dict[str, bytes],
+    trace_file_tokens: dict[str, tuple[int, int]] | None = None,
+) -> list[dict[str, Any]]:
+    if not trace_path:
+        return []
+    path = Path(trace_path)
+    try:
+        stat_result = path.stat()
+    except OSError:
+        trace_offsets.pop(trace_path, None)
+        pending_lines.pop(trace_path, None)
+        if trace_file_tokens is not None:
+            trace_file_tokens.pop(trace_path, None)
+        return []
+
+    file_size = stat_result.st_size
+    file_token = (stat_result.st_dev, stat_result.st_ino)
+
+    offset = trace_offsets.get(trace_path, 0)
+    if trace_file_tokens is not None:
+        previous_token = trace_file_tokens.get(trace_path)
+        if previous_token is not None and previous_token != file_token:
+            offset = 0
+            pending_lines.pop(trace_path, None)
+        trace_file_tokens[trace_path] = file_token
+
+    if offset < 0 or offset > file_size:
+        offset = 0
+        pending_lines.pop(trace_path, None)
+
+    try:
+        with path.open("rb") as handle:
+            handle.seek(offset)
+            chunk = handle.read()
+            trace_offsets[trace_path] = handle.tell()
+    except OSError:
+        return []
+
+    if not chunk:
+        return []
+
+    events: list[dict[str, Any]] = []
+    buffer = pending_lines.get(trace_path, b"") + chunk
+    next_pending = b""
+    for raw_line in buffer.splitlines(keepends=True):
+        if not raw_line.endswith((b"\n", b"\r")):
+            next_pending = raw_line
+            continue
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if isinstance(payload, dict):
+            events.append(payload)
+
+    if next_pending:
+        pending_lines[trace_path] = next_pending
+    else:
+        pending_lines.pop(trace_path, None)
+
+    return events
 
 
 def build_deps(
@@ -109,11 +180,78 @@ def _evaluate_all_solved_policy(
     return False, idle_since
 
 
+def _resolve_challenge_category(deps: CoordinatorDeps, challenge_name: str) -> str:
+    meta = deps.challenge_metas.get(challenge_name)
+    if meta and meta.category:
+        return str(meta.category).strip()
+
+    challenge_state = deps.runtime_state.challenges.get(challenge_name)
+    if challenge_state and challenge_state.category:
+        return str(challenge_state.category).strip()
+
+    return ""
+
+
+def _resolve_challenge_platform(deps: CoordinatorDeps, challenge_name: str) -> str:
+    meta = deps.challenge_metas.get(challenge_name)
+    if meta and meta.platform:
+        return str(meta.platform).strip()
+    platform_name = getattr(deps.settings, "platform", "")
+    return str(platform_name).strip()
+
+
+def _summarize_competition_state(state) -> str:
+    solved_count = len(state.known_solved)
+    known_count = len(state.known_challenges)
+    active_swarms = state.active_swarm_count
+    unsolved_count = max(known_count - solved_count, 0)
+    return (
+        f"{active_swarms} active swarms, "
+        f"{unsolved_count} unsolved challenges, "
+        f"{solved_count} solved challenges, "
+        f"{known_count} known challenges"
+    )
+
+
+def _summarize_memory(deps: CoordinatorDeps, challenge_name: str) -> str:
+    return deps.working_memory_store.get(challenge_name).to_summary()
+
+
+def _summarize_knowledge(deps: CoordinatorDeps, challenge_name: str) -> str:
+    category = _resolve_challenge_category(deps, challenge_name)
+    platform_name = _resolve_challenge_platform(deps, challenge_name)
+    applied_ids = set()
+    swarm = deps.runtime_state.swarms.get(challenge_name)
+    if swarm is not None:
+        applied_ids = set(swarm.applied_knowledge_ids)
+    matched = deps.knowledge_store.match(
+        category=category,
+        challenge_name=challenge_name,
+        applied_ids=applied_ids,
+        platform=platform_name,
+    )
+    if not matched:
+        return "No reusable knowledge matched."
+
+    lines = ["Reusable knowledge:"]
+    for entry in matched:
+        lines.append(
+            f"- knowledge_id={entry.id}; "
+            f"scope={entry.scope}; "
+            f"kind={entry.kind}; "
+            f"source={entry.source_challenge}; "
+            f"confidence={entry.confidence:.2f}; "
+            f"content={entry.content}"
+        )
+    return "\n".join(lines)
+
+
 async def run_event_loop(
     deps: CoordinatorDeps,
     ctfd: CompetitionPlatformClient,
     cost_tracker: CostTracker,
     turn_fn: TurnFn,
+    advisor: CoordinatorAdvisor | None = None,
     status_interval: int = 60,
 ) -> dict[str, Any]:
     """Run the shared coordinator event loop.
@@ -125,31 +263,61 @@ async def run_event_loop(
         turn_fn: Async function that sends a message to the coordinator LLM.
         status_interval: Seconds between status updates.
     """
-    await ctfd.validate_access()
-
-    poller = CompetitionPoller(ctfd=ctfd, interval_s=5.0)
-    await poller.start()
-
-    # Start operator message HTTP endpoint
-    msg_server = await _start_msg_server(deps.operator_inbox, deps.msg_port)
-
-    logger.info(
-        "Coordinator starting: %d models, %d challenges, %d solved",
-        len(deps.model_specs),
-        len(poller.known_challenges),
-        len(poller.known_solved),
-    )
-
-    solved_names = _effective_solved_names(deps, poller.known_solved)
-    unsolved = poller.known_challenges - solved_names
-    initial_msg = (
-        f"CTF is LIVE. {len(poller.known_challenges)} challenges, "
-        f"{len(solved_names)} solved.\n"
-        f"Unsolved: {sorted(unsolved) if unsolved else 'NONE'}\n"
-        "Fetch challenges and spawn swarms for all unsolved."
-    )
+    msg_server: asyncio.Server | Any | None = None
+    poller: CompetitionPoller | None = None
 
     try:
+        await ctfd.validate_access()
+
+        poller = CompetitionPoller(ctfd=ctfd, interval_s=5.0)
+        await poller.start()
+
+        # Start operator message HTTP endpoint
+        msg_server = await _start_msg_server(deps.operator_inbox, deps.msg_port)
+        deps.runtime_state = build_runtime_state_snapshot(
+            deps,
+            poller,
+            asyncio.get_event_loop().time(),
+        )
+        initial_action_results = await _execute_policy_tick(
+            deps,
+            poller,
+            asyncio.get_event_loop().time(),
+        )
+        if initial_action_results:
+            deps.runtime_state = build_runtime_state_snapshot(
+                deps,
+                poller,
+                asyncio.get_event_loop().time(),
+            )
+        initial_advisor_results = await _execute_advisor_tick(
+            deps,
+            advisor,
+            asyncio.get_event_loop().time(),
+        )
+        if initial_advisor_results:
+            deps.runtime_state = build_runtime_state_snapshot(
+                deps,
+                poller,
+                asyncio.get_event_loop().time(),
+            )
+
+        logger.info(
+            "Coordinator starting: %d models, %d challenges, %d solved",
+            len(deps.model_specs),
+            len(poller.known_challenges),
+            len(poller.known_solved),
+        )
+
+        solved_names = _effective_solved_names(deps, poller.known_solved)
+        unsolved = poller.known_challenges - solved_names
+        initial_msg = (
+            f"CTF is LIVE. {len(poller.known_challenges)} challenges, "
+            f"{len(solved_names)} solved.\n"
+            f"Unsolved: {sorted(unsolved) if unsolved else 'NONE'}\n"
+            "Fetch challenges and spawn swarms for all unsolved."
+        )
+
         await turn_fn(initial_msg)
 
         # Auto-spawn swarms for unsolved challenges if coordinator LLM didn't
@@ -182,11 +350,37 @@ async def run_event_loop(
                 elif evt.kind == "challenge_solved":
                     parts.append(f"SOLVED: '{evt.challenge_name}' — swarm auto-killed.")
 
-            # Detect finished swarms
-            for name, task in list(deps.swarm_tasks.items()):
-                if task.done():
-                    parts.append(f"SOLVER FINISHED: Swarm for '{name}' completed. Check results or retry.")
-                    deps.swarm_tasks.pop(name, None)
+            now = asyncio.get_event_loop().time()
+            deps.runtime_state = build_runtime_state_snapshot(deps, poller, now)
+
+            for challenge_name, swarm in deps.swarms.items():
+                for solver in swarm.solvers.values():
+                    tracer = getattr(solver, "tracer", None)
+                    if not tracer:
+                        continue
+                    trace_path = tracer.path if hasattr(tracer, "path") else str(tracer)
+                    trace_events = _load_incremental_trace_events(
+                        trace_path,
+                        deps.trace_offsets,
+                        deps.trace_pending_lines,
+                        deps.trace_file_tokens,
+                    )
+                    if trace_events:
+                        memory = deps.working_memory_store.apply_trace_events(challenge_name, trace_events)
+                        category = _resolve_challenge_category(deps, challenge_name)
+                        platform_name = _resolve_challenge_platform(deps, challenge_name)
+                        deps.knowledge_store.promote_from_memory(
+                            challenge_name=challenge_name,
+                            category=category,
+                            memory=memory,
+                            platform=platform_name,
+                        )
+
+            from backend.agents.coordinator_core import retire_finished_swarms
+
+            retired_swarms = retire_finished_swarms(deps)
+            for name in retired_swarms:
+                parts.append(f"SOLVER FINISHED: Swarm for '{name}' completed. Check results or retry.")
 
             # Drain solver-to-coordinator messages
             while True:
@@ -222,6 +416,29 @@ async def run_event_loop(
                 else:
                     logger.info(f"Event -> coordinator: {status_line}")
 
+            policy_action_results = await _execute_policy_tick(
+                deps,
+                poller,
+                asyncio.get_event_loop().time(),
+            )
+            if policy_action_results:
+                deps.runtime_state = build_runtime_state_snapshot(
+                    deps,
+                    poller,
+                    asyncio.get_event_loop().time(),
+                )
+            advisor_action_results = await _execute_advisor_tick(
+                deps,
+                advisor,
+                asyncio.get_event_loop().time(),
+            )
+            if advisor_action_results:
+                deps.runtime_state = build_runtime_state_snapshot(
+                    deps,
+                    poller,
+                    asyncio.get_event_loop().time(),
+                )
+
             if parts:
                 msg = "\n\n".join(parts)
                 logger.info("Event -> coordinator: %s", msg[:200])
@@ -253,7 +470,8 @@ async def run_event_loop(
         if msg_server:
             msg_server.close()
             await msg_server.wait_closed()
-        await poller.stop()
+        if poller is not None:
+            await poller.stop()
         for swarm in deps.swarms.values():
             swarm.kill()
         for task in deps.swarm_tasks.values():
@@ -288,6 +506,105 @@ async def _auto_spawn_one(deps: CoordinatorDeps, challenge_name: str) -> None:
         logger.info(f"Auto-spawn {challenge_name}: {result[:100]}")
     except Exception as e:
         logger.warning(f"Auto-spawn failed for {challenge_name}: {e}")
+
+
+async def _execute_policy_tick(deps: CoordinatorDeps, poller, now: float) -> list[tuple[Any, str]]:
+    if deps.policy_engine is None:
+        return []
+
+    from backend.agents.coordinator_core import execute_action
+
+    try:
+        actions = deps.policy_engine.plan_tick(
+            competition=deps.runtime_state,
+            working_memory_store=deps.working_memory_store,
+            knowledge_store=deps.knowledge_store,
+            now=now,
+        )
+    except Exception:
+        logger.exception("Policy planning failed")
+        return []
+    action_results: list[tuple[Any, str]] = []
+    for action in actions:
+        try:
+            result_text = await execute_action(deps, action)
+        except Exception:
+            logger.exception("Policy action failed: %r", action)
+            continue
+        logger.info("Policy action executed: %r -> %s", action, result_text)
+        action_results.append((action, result_text))
+    return action_results
+
+
+async def _execute_advisor_tick(
+    deps: CoordinatorDeps,
+    advisor: CoordinatorAdvisor | None,
+    now: float,
+) -> list[tuple[Any, str]]:
+    if advisor is None or deps.policy_engine is None:
+        return []
+
+    from backend.agents.coordinator_core import execute_action
+
+    suggestions = []
+    competition_summary = _summarize_competition_state(deps.runtime_state)
+    for challenge_name, swarm in sorted(deps.runtime_state.swarms.items()):
+        if swarm.status != "running":
+            continue
+        context = AdvisorContext(
+            competition_summary=competition_summary,
+            challenge_name=challenge_name,
+            memory_summary=_summarize_memory(deps, challenge_name),
+            knowledge_summary=_summarize_knowledge(deps, challenge_name),
+        )
+        try:
+            suggestions.extend(await advisor.suggest(context))
+        except Exception:
+            logger.exception("Advisor suggestion failed for %s", challenge_name)
+
+    suggestions = _dedupe_advisor_suggestions(suggestions)
+    if not suggestions:
+        return []
+
+    try:
+        actions = deps.policy_engine.apply_advisor_suggestions(
+            suggestions=suggestions,
+            competition=deps.runtime_state,
+            now=now,
+        )
+    except Exception:
+        logger.exception("Advisor action planning failed")
+        return []
+
+    action_results: list[tuple[Any, str]] = []
+    for action in actions:
+        try:
+            result_text = await execute_action(deps, action)
+        except Exception:
+            logger.exception("Advisor action failed: %r", action)
+            continue
+        logger.info("Advisor action executed: %r -> %s", action, result_text)
+        action_results.append((action, result_text))
+    return action_results
+
+
+def _dedupe_advisor_suggestions(suggestions: list[Any]) -> list[Any]:
+    deduped: list[Any] = []
+    seen_broadcast_keys: set[tuple[str, str]] = set()
+    for suggestion in suggestions:
+        action_hint = str(getattr(suggestion, "action_hint", "")).strip().lower()
+        if action_hint != "broadcast_knowledge":
+            deduped.append(suggestion)
+            continue
+
+        challenge_name = str(getattr(suggestion, "challenge_name", "")).strip()
+        knowledge_id = str(getattr(suggestion, "knowledge_id", "")).strip()
+        broadcast_key = (challenge_name, knowledge_id)
+        if broadcast_key in seen_broadcast_keys:
+            continue
+        seen_broadcast_keys.add(broadcast_key)
+        deduped.append(suggestion)
+    return deduped
 
 
 async def _auto_spawn_unsolved(deps: CoordinatorDeps, poller) -> None:

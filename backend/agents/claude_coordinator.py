@@ -27,6 +27,13 @@ from backend.agents.coordinator_core import (
 )
 from backend.agents.coordinator_loop import build_deps, run_event_loop
 from backend.config import Settings
+from backend.control.advisor import (
+    ADVISOR_SYSTEM_PROMPT,
+    AdvisorContext,
+    AdvisorSuggestion,
+    parse_advisor_suggestions_json,
+    render_advisor_prompt,
+)
 from backend.deps import CoordinatorDeps
 
 logger = logging.getLogger(__name__)
@@ -105,6 +112,30 @@ def _build_coordinator_mcp(deps: CoordinatorDeps):
     )
 
 
+class ClaudeCoordinatorAdvisor:
+    """Claude SDK advisor adapter that returns structured suggestions only."""
+
+    def __init__(self, model: str) -> None:
+        self.model = model
+
+    async def suggest(self, context: AdvisorContext) -> list[AdvisorSuggestion]:
+        prompt = render_advisor_prompt(context)
+        text = ""
+        options = ClaudeAgentOptions(
+            model=self.model,
+            system_prompt=ADVISOR_SYSTEM_PROMPT,
+            env={"CLAUDECODE": ""},
+            allowed_tools=[],
+            permission_mode="bypassPermissions",
+        )
+        async with ClaudeSDKClient(options=options) as client:
+            await client.query(prompt)
+            async for message in client.receive_response():
+                if isinstance(message, ResultMessage) and message.result:
+                    text = str(message.result).strip()
+        return parse_advisor_suggestions_json(text, default_challenge=context.challenge_name)
+
+
 async def run_claude_coordinator(
     settings: Settings,
     model_specs: list[str] | None = None,
@@ -121,6 +152,7 @@ async def run_claude_coordinator(
 
     mcp_server = _build_coordinator_mcp(deps)
     resolved_model = coordinator_model or "claude-opus-4-6"
+    advisor = ClaudeCoordinatorAdvisor(model=resolved_model)
 
     allowed = {
         "mcp__coordinator__fetch_challenges", "mcp__coordinator__get_solve_status",
@@ -174,4 +206,4 @@ async def run_claude_coordinator(
             if msg_count == 0:
                 logger.warning("Coordinator turn produced no messages!")
 
-        return await run_event_loop(deps, ctfd, cost_tracker, turn_fn)
+        return await run_event_loop(deps, ctfd, cost_tracker, turn_fn, advisor=advisor)
