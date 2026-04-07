@@ -23,6 +23,7 @@ from claude_agent_sdk import (
     TextBlock,
 )
 
+from backend.capabilities import build_challenge_profile, claude_runtime_profile, resolve_capabilities
 from backend.cost_tracker import CostTracker
 from backend.ctfd import CTFdClient
 from backend.loop_detect import LoopDetector
@@ -34,6 +35,14 @@ from backend.solver_base import CANCELLED, ERROR, FLAG_FOUND, GAVE_UP, QUOTA_ERR
 from backend.tracing import SolverTracer
 
 logger = logging.getLogger(__name__)
+
+
+def _build_claude_resolved_capabilities(*, challenge_dir: str, meta: ChallengeMeta):
+    distfile_names = list_distfiles(challenge_dir)
+    return resolve_capabilities(
+        build_challenge_profile(meta, distfile_names),
+        claude_runtime_profile(),
+    )
 
 
 class ClaudeSolver:
@@ -94,6 +103,10 @@ class ClaudeSolver:
         container_arch = arch_result.stdout.strip() or "unknown"
 
         distfile_names = list_distfiles(self.challenge_dir)
+        resolved_capabilities = _build_claude_resolved_capabilities(
+            challenge_dir=self.challenge_dir,
+            meta=self.meta,
+        )
         sandbox_preamble = (
             "IMPORTANT: You are running inside a Docker sandbox. "
             "All files are under /challenge/ — distfiles at /challenge/distfiles/, "
@@ -103,8 +116,10 @@ class ClaudeSolver:
             "submit_flag 'FLAG' to submit. notify_coordinator 'MSG' to message the coordinator.\n\n"
         )
         system_prompt = sandbox_preamble + build_prompt(
-            self.meta, distfile_names, container_arch=container_arch,
-            has_named_tools=False,
+            self.meta,
+            distfile_names,
+            container_arch=container_arch,
+            resolved_capabilities=resolved_capabilities,
         )
 
         # PreToolUse hook: rewrite Bash commands to run in the sandbox container.
