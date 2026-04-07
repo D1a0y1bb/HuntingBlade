@@ -43,6 +43,13 @@ class WorkingMemoryStore:
             if not isinstance(event, dict):
                 continue
             event_type = event.get("type")
+            if event_type == "bump":
+                insight = str(event.get("insights", "")).strip()
+                if insight and insight not in memory.last_guidance:
+                    memory.last_guidance.append(insight)
+                for hypothesis in _extract_open_hypotheses(insight, allow_unprefixed=True):
+                    if hypothesis not in memory.open_hypotheses:
+                        memory.open_hypotheses.append(hypothesis)
             if event_type == "tool_result" and event.get("tool") == "submit_flag":
                 tool = str(event.get("tool", "")).strip()
                 result = str(event.get("result", "")).strip()
@@ -50,18 +57,18 @@ class WorkingMemoryStore:
                     summary = f"{tool} returned {result}"
                     if summary not in memory.failed_hypotheses:
                         memory.failed_hypotheses.append(summary)
-            if event_type == "bump":
-                insight = str(event.get("insights", "")).strip()
-                if insight and insight not in memory.last_guidance:
-                    memory.last_guidance.append(insight)
             if event_type == "tool_result" and "/challenge/" in str(event.get("result", "")):
                 artifact = str(event.get("result", "")).strip()
                 if artifact and artifact not in memory.useful_artifacts:
                     memory.useful_artifacts.append(artifact)
             if event_type == "tool_result":
-                finding = _extract_verified_finding(str(event.get("result", "")))
+                result = str(event.get("result", ""))
+                finding = _extract_verified_finding(result)
                 if finding and finding not in memory.verified_findings:
                     memory.verified_findings.append(finding)
+                for hypothesis in _extract_open_hypotheses(result):
+                    if hypothesis not in memory.open_hypotheses:
+                        memory.open_hypotheses.append(hypothesis)
         return memory
 
 
@@ -110,3 +117,56 @@ def _extract_verified_finding(result: str) -> str:
     if any(marker in lowered for marker in prefixes):
         return finding
     return ""
+
+
+def _extract_open_hypotheses(text: str, *, allow_unprefixed: bool = False) -> list[str]:
+    if not text.strip():
+        return []
+    extracted: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip().lstrip("-*").strip()
+        if not line:
+            continue
+        normalized = re.sub(r"\s+", " ", line).strip()
+        lowered = normalized.lower()
+        if _extract_verified_finding(normalized):
+            continue
+        if lowered.startswith("candidate finding:") or lowered.startswith("next step:"):
+            extracted.append(normalized)
+            continue
+        if allow_unprefixed and _is_plain_hypothesis_candidate(normalized):
+            extracted.append(normalized)
+    return extracted
+
+
+def _is_plain_hypothesis_candidate(text: str) -> bool:
+    stripped = text.strip()
+    if len(stripped) < 8:
+        return False
+    lowered = stripped.lower()
+    if lowered in {"ok", "done", "continue", "retry", "none", "n/a"}:
+        return False
+    meta_prefixes = (
+        "no sibling insights available",
+        "retry with open hypothesis:",
+    )
+    if any(lowered.startswith(prefix) for prefix in meta_prefixes):
+        return False
+    actionable_prefixes = (
+        "try ",
+        "check ",
+        "use ",
+        "run ",
+        "inspect ",
+        "verify ",
+        "test ",
+        "probe ",
+        "attempt ",
+        "trace ",
+        "dump ",
+        "read ",
+        "enumerate ",
+    )
+    if not any(lowered.startswith(prefix) for prefix in actionable_prefixes):
+        return False
+    return not re.fullmatch(r"[\W_]+", stripped)

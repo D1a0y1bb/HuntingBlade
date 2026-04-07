@@ -30,7 +30,12 @@ async def run_headless_coordinator(
     )
     deps.msg_port = msg_port
 
-    async def turn_fn(message: str) -> None:
+    async def event_sink(message: str) -> None:
         logger.info("Headless event: %s", message[:400])
 
-    return await run_event_loop(deps, ctfd, cost_tracker, turn_fn)
+    return await run_event_loop(
+        deps=deps,
+        ctfd=ctfd,
+        cost_tracker=cost_tracker,
+        event_sink=event_sink,
+    )

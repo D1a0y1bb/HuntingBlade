@@ -25,6 +25,16 @@ logger = logging.getLogger(__name__)
 
 # Callable type for a coordinator turn: (message) -> None
 TurnFn = Callable[[str], Coroutine[Any, Any, None]]
+EventSink = Callable[[str], Coroutine[Any, Any, None]]
+
+
+async def _emit_event(event_sink: EventSink | None, message: str) -> None:
+    if not message:
+        return
+    logger.info("Event -> coordinator: %s", message[:200])
+    if event_sink is None:
+        return
+    await event_sink(message)
 
 
 def _load_incremental_trace_events(
@@ -250,7 +260,8 @@ async def run_event_loop(
     deps: CoordinatorDeps,
     ctfd: CompetitionPlatformClient,
     cost_tracker: CostTracker,
-    turn_fn: TurnFn,
+    turn_fn: TurnFn | None = None,
+    event_sink: EventSink | None = None,
     advisor: CoordinatorAdvisor | None = None,
     status_interval: int = 60,
 ) -> dict[str, Any]:
@@ -260,11 +271,16 @@ async def run_event_loop(
         deps: Coordinator dependencies (shared state).
         ctfd: Competition platform client (for poller).
         cost_tracker: Cost tracker.
-        turn_fn: Async function that sends a message to the coordinator LLM.
+        turn_fn: Legacy async function that sends a message to the coordinator LLM.
+        event_sink: Optional async event sink used by the shared loop.
         status_interval: Seconds between status updates.
     """
+    if turn_fn is not None and event_sink is not None:
+        raise ValueError("run_event_loop received both turn_fn and event_sink; pass only one")
+
     msg_server: asyncio.Server | Any | None = None
     poller: CompetitionPoller | None = None
+    sink = event_sink or turn_fn
 
     try:
         await ctfd.validate_access()
@@ -318,7 +334,7 @@ async def run_event_loop(
             "Fetch challenges and spawn swarms for all unsolved."
         )
 
-        await turn_fn(initial_msg)
+        await _emit_event(sink, initial_msg)
 
         # Auto-spawn swarms for unsolved challenges if coordinator LLM didn't
         await _auto_spawn_unsolved(deps, poller)
@@ -441,8 +457,7 @@ async def run_event_loop(
 
             if parts:
                 msg = "\n\n".join(parts)
-                logger.info("Event -> coordinator: %s", msg[:200])
-                await turn_fn(msg)
+                await _emit_event(sink, msg)
 
             now = asyncio.get_event_loop().time()
             active_count = sum(1 for task in deps.swarm_tasks.values() if not task.done())
