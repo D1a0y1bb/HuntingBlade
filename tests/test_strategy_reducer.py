@@ -1,6 +1,6 @@
 from backend.control.state import ChallengeState, SwarmState
-from backend.control.working_memory import ChallengeWorkingMemory
 from backend.control.strategy_reducer import reduce_strategy_state
+from backend.control.working_memory import ChallengeWorkingMemory
 
 
 def test_reduce_strategy_state_marks_exploit_for_actionable_hypothesis() -> None:

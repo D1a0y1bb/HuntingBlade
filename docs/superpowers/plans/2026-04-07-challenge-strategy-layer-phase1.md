@@ -8,6 +8,14 @@
 
 **Tech Stack:** Python 3.14, dataclasses, asyncio, pytest, Ruff
 
+## 执行状态
+
+- `Task 1` 已完成：新增 `backend/control/strategy_state.py` 与 `backend/control/strategy_reducer.py`，并补 `tests/test_strategy_reducer.py`。
+- `Task 2` 已完成：`CoordinatorDeps` 已新增 `strategy_states`，`coordinator_loop` 已接入 `_refresh_strategy_states()` 与 `_summarize_strategy()`。
+- `Task 3` 已完成：`PolicyEngine.plan_tick()` 已优先消费 `strategy_states`，可用 `active_hypothesis` 驱动 bump，并在低置信度 `blocked` 状态下抑制 bump。
+- `Task 4` 已完成：`AdvisorContext` 与 prompt 已接入 `strategy_summary`，`README` 已补 `Strategy Layer` 架构说明。
+- `Task 5` 已完成：已跑 `uv run pytest -q` 与 `uv run ruff check backend tests`；当前工作区除用户原有未跟踪目录 `writeups/` 外，不包含额外无关改动。
+
 ---
 
 ## File Structure
