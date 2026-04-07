@@ -9,6 +9,7 @@ from .actions import (
     SpawnSwarm,
 )
 from .state import ChallengeState, CompetitionState, SwarmState
+from .strategy_state import ChallengeStrategyState
 
 __all__ = [
     "BumpSolver",
@@ -20,4 +21,5 @@ __all__ = [
     "ChallengeState",
     "CompetitionState",
     "SwarmState",
+    "ChallengeStrategyState",
 ]
