@@ -7,6 +7,7 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from backend.control.knowledge_store import KnowledgeStore
 from backend.control.state import CompetitionState
 from backend.control.working_memory import WorkingMemoryStore
 from backend.cost_tracker import CostTracker
@@ -49,6 +50,7 @@ class CoordinatorDeps:
     no_submit: bool = False
     max_concurrent_challenges: int = 10
     working_memory_store: WorkingMemoryStore = field(default_factory=WorkingMemoryStore)
+    knowledge_store: KnowledgeStore = field(default_factory=KnowledgeStore)
 
     msg_port: int = 0  # 0 = auto-pick free port
 

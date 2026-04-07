@@ -26,6 +26,9 @@ class ChallengeWorkingMemory:
             ]
         )
 
+    def verified_findings_for_promotion(self) -> list[str]:
+        return [finding.strip() for finding in self.verified_findings if finding.strip()]
+
 
 class WorkingMemoryStore:
     def __init__(self) -> None:

@@ -179,6 +179,18 @@ def _evaluate_all_solved_policy(
     return False, idle_since
 
 
+def _resolve_challenge_category(deps: CoordinatorDeps, challenge_name: str) -> str:
+    meta = deps.challenge_metas.get(challenge_name)
+    if meta and meta.category:
+        return str(meta.category).strip()
+
+    challenge_state = deps.runtime_state.challenges.get(challenge_name)
+    if challenge_state and challenge_state.category:
+        return str(challenge_state.category).strip()
+
+    return ""
+
+
 async def run_event_loop(
     deps: CoordinatorDeps,
     ctfd: CompetitionPlatformClient,
@@ -273,7 +285,13 @@ async def run_event_loop(
                         deps.trace_file_tokens,
                     )
                     if trace_events:
-                        deps.working_memory_store.apply_trace_events(challenge_name, trace_events)
+                        memory = deps.working_memory_store.apply_trace_events(challenge_name, trace_events)
+                        category = _resolve_challenge_category(deps, challenge_name)
+                        deps.knowledge_store.promote_from_memory(
+                            challenge_name=challenge_name,
+                            category=category,
+                            memory=memory,
+                        )
 
             # Detect finished swarms
             for name, task in list(deps.swarm_tasks.items()):

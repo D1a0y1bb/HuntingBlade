@@ -749,6 +749,94 @@ async def test_run_event_loop_updates_working_memory_from_solver_traces(
 
 
 @pytest.mark.asyncio
+async def test_run_event_loop_promotes_verified_platform_rule_to_knowledge_store(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    trace_path = tmp_path / "trace.jsonl"
+    trace_events = [
+        {"type": "tool_result", "tool": "bash", "result": "platform rule: Lingxu env题需要先 begin/run/addr"},
+    ]
+    trace_path.write_text(
+        "".join(json.dumps(item) + "\n" for item in trace_events),
+        encoding="utf-8",
+    )
+
+    class StubTracer:
+        path = str(trace_path)
+
+    class StubSolver:
+        tracer = StubTracer()
+
+    class StubSwarm:
+        def __init__(self) -> None:
+            self.cancel_event = asyncio.Event()
+            self.solvers = {"azure/gpt-5.4": StubSolver()}
+
+        def kill(self) -> None:
+            self.cancel_event.set()
+
+    platform = FakePlatform()
+    deps = CoordinatorDeps(
+        ctfd=platform,
+        cost_tracker=CostTracker(),
+        settings=make_settings(all_solved_policy="exit"),
+        model_specs=[],
+    )
+    deps.swarms["echo"] = StubSwarm()
+    deps.challenge_metas["echo"] = ChallengeMeta(name="echo", category="web")
+
+    class FakePoller:
+        def __init__(self, ctfd: FakePlatform, interval_s: float) -> None:
+            self.ctfd = ctfd
+            self.interval_s = interval_s
+            self.known_challenges = {"echo"}
+            self.known_solved = {"echo"}
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        async def get_event(self, timeout: float = 1.0) -> None:
+            return None
+
+        def drain_events(self) -> list[Any]:
+            return []
+
+    async def fake_start_msg_server(inbox: asyncio.Queue, port: int = 0) -> None:
+        return None
+
+    async def fake_auto_spawn_unsolved(_deps: CoordinatorDeps, _poller: Any) -> None:
+        return None
+
+    async def fake_turn_fn(message: str) -> None:
+        return None
+
+    monkeypatch.setattr(coordinator_loop, "CompetitionPoller", FakePoller)
+    monkeypatch.setattr(coordinator_loop, "_start_msg_server", fake_start_msg_server)
+    monkeypatch.setattr(coordinator_loop, "_auto_spawn_unsolved", fake_auto_spawn_unsolved)
+
+    await coordinator_loop.run_event_loop(
+        deps=deps,
+        ctfd=platform,
+        cost_tracker=deps.cost_tracker,
+        turn_fn=fake_turn_fn,
+        status_interval=9999,
+    )
+
+    matched = deps.knowledge_store.match(
+        category="web",
+        challenge_name="other-web",
+        applied_ids=set(),
+    )
+    assert len(matched) == 1
+    assert matched[0].scope == "platform"
+    assert matched[0].kind == "platform_rule"
+
+
+@pytest.mark.asyncio
 async def test_run_event_loop_uses_real_snapshot_for_terminal_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
